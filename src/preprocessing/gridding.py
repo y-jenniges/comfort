@@ -515,6 +515,189 @@ class Grid:
         return mapped_tables
 
 
+class SpaceGrid:
+    """ This will create gridded data tables but only in the geospatial dimension. The time dimension will be kept
+    but not gridded. Therefore, the grid cell values are not averaged. """
+    def __init__(self,
+                 lat_min=None, lat_max=None, dlat=None,
+                 lon_min=None, lon_max=None, dlon=None,
+                 z_min=None, z_max=None, dz=None, z_array=None,
+                 bathymetry_grid_path="../../data/bathymetry/gebco_2022_sub_ice_topo/gebco_2022_sub_ice_topo.nc",
+                 lat_variable="lat", lon_variable="lon", depth_variable="elevation",
+                 grid_id=None):
+        # lat/lon are cell-centered, time and depth are node-centered
+        # grid specifics
+        if grid_id:
+            self.grid_id = grid_id
+            self.grid_name = "grid_" + str(grid_id)
+        else:
+            self.grid_id = self.generate_grid_id()
+            self.grid_name = "grid_" + str(self.grid_id)
+
+        # init grid parameters
+        self.lat_min = lat_min
+        self.lat_max = lat_max
+        self.dlat = dlat
+        self.lon_min = lon_min
+        self.lon_max = lon_max
+        self.dlon = dlon
+        self.z_array = np.sort(np.array(z_array)) if z_array is not None else None
+        self.z_min = z_min if z_array is None else self.z_array.min()
+        self.z_max = z_max if z_array is None else self.z_array.max()
+        self.dz = dz
+        self.bathymetry_grid_path = bathymetry_grid_path
+
+        self.check_input()
+
+        # create grid
+        self.grid = self.create_grid(lat_variable, lon_variable, depth_variable)
+
+    def check_input(self):
+        # consistency checks
+        assert (self.lat_min is not None)
+        assert (self.lat_max is not None)
+        assert (self.dlat is not None)
+        assert (self.lon_min is not None)
+        assert (self.lon_max is not None)
+        assert (self.dlon is not None)
+        assert (self.z_min is not None)
+        assert (self.z_max is not None)
+        assert (self.z_min >= 0)
+        assert (self.z_max <= 12000)  # 10977)
+
+        if self.z_array is None:
+            assert (self.dz is not None)
+            # for a regular grid, we need complete grid cells
+            assert ((abs(self.lat_min) + abs(self.lat_max)) % self.dlat == 0)
+            assert ((abs(self.lon_min) + abs(self.lon_max)) % self.dlon == 0)
+            assert ((abs(self.z_min) + abs(self.z_max)) % self.dz == 0)
+        else:
+            assert (self.dz is None)
+
+        assert (self.lat_min >= -90)
+        assert (self.lat_max <= 90)
+        assert (self.lon_min >= -180)
+        assert (self.lon_max <= 180)
+
+        # check if path is valid
+        assert (os.path.isfile(self.bathymetry_grid_path))
+
+    def generate_grid_id(self):
+        grid_id = round(time.time())  # current timestamp in seconds
+        return grid_id
+
+    def create_grid(self, lat_variable="lat", lon_variable="lon", depth_variable="elevation"):
+        # bases on:
+        # https://github.com/willirath/geomar-open-hacky-hour-2021-04/blob/main/2022-06-23/etopo05_to_grid.ipynb
+        # grid must be nc file, format: latitude, longitude, depth
+        grid_dataset = xr.open_dataset(self.bathymetry_grid_path)
+        grid_dataset = grid_dataset.rename({
+            lat_variable: "LATITUDE",
+            lon_variable: "LONGITUDE",
+            depth_variable: "LEV_M"
+        }
+        )
+
+        # positive z points downwards (convention in COMFORT)
+        grid_dataset["LEV_M"] = grid_dataset["LEV_M"] * -1
+
+        # will be used as grid selectors (cell-centered)
+        lat = xr.DataArray(np.arange(self.lat_min + self.dlat / 2, self.lat_max, self.dlat), dims="LATITUDE")
+        lon = xr.DataArray(np.arange(self.lon_min + self.dlon / 2, self.lon_max, self.dlon), dims="LONGITUDE")
+
+        # will be used to generate a boolean array which is True where water is present (cell-centered)
+        if self.z_array is None:
+            z_arr = np.arange(self.z_min, self.z_max, self.dz)
+        else:
+            z_arr = self.z_array[:-1]
+
+        z = xr.DataArray(
+            z_arr,
+            dims="LEV_M",
+            coords={"LEV_M": z_arr},
+            name="LEV_M",
+        )
+
+        z_at_grid = grid_dataset.LEV_M.sel(
+            LONGITUDE=lon,
+            LATITUDE=lat,
+            method="nearest"
+        )
+
+        # make sure we label with the selectors
+        z_at_grid.coords["LATITUDE"] = lat
+        z_at_grid.coords["LONGITUDE"] = lon
+
+        # addd a dimension which is True if there is water
+        water_filled = (z <= z_at_grid).rename("water")
+        # water_filled.plot(col="LEV_M", col_wrap=3)
+
+        # add time dimension
+        # water_filled = water_filled.expand_dims(DATEANDTIME=self.time_array)
+        df = water_filled.to_dataframe().reset_index()
+
+        # have right dtypes
+        df = df.astype({"LEV_M": float, "LATITUDE": float, "LONGITUDE": float, "water": bool})
+
+        return df
+
+    def map_tables(self, connection, param_tables=None, include_z_max=True):
+        logging.info("Mapping tables to grid...")
+        connection.create_aggregate('median', 1, sqlite_util.Median)
+        connection.create_aggregate('std', 1, sqlite_util.Std)
+
+        if not param_tables:
+            param_tables = get_names_of_all_parameter_tables(connection)
+
+        for table in param_tables:
+            # load data
+            # where clause --> filter samples for latitude, longitude, depth, time range
+            z_eq = "<=" if include_z_max else "<"
+            q = f"select LATITUDE, LONGITUDE, LEV_M, DATEANDTIME, VAL " \
+                f"from {table} where " \
+                f"LATITUDE >= {self.lat_min} and LATITUDE <= {self.lat_max} and " \
+                f"LONGITUDE >= {self.lon_min} and LONGITUDE <= {self.lon_max} and " \
+                f"LEV_M >= {self.z_min} and LEV_M {z_eq} {self.z_max} " \
+                f";"
+                #f"DATEANDTIME >= '{self.time_min}' and DATEANDTIME <= '{self.time_max}' " \
+                #f";"
+            print(q)
+            cur = connection.execute(q)
+            df = pd.DataFrame(cur.fetchall(), columns=[x[0] for x in cur.description])
+
+            # map latitude
+            lat_bins = np.arange(self.lat_min, self.lat_max + self.dlat, self.dlat).astype(float)
+            lat_bins[-1] = lat_bins[-1] + 0.001 * (1 if lat_bins[-1] >= 0 else -1)
+            df["LATITUDE"] = pd.cut(df["LATITUDE"], bins=lat_bins, right=False,
+                                    labels=lat_bins[:-1] + self.dlat / 2)
+
+            # map longitude
+            lon_bins = np.arange(self.lon_min, self.lon_max + self.dlon, self.dlon).astype(float)
+            lon_bins[-1] = lon_bins[-1] + 0.001 * (1 if lon_bins[-1] >= 0 else -1)
+            df["LONGITUDE"] = pd.cut(df["LONGITUDE"], bins=lon_bins, right=False,
+                                     labels=lon_bins[:-1] + self.dlon / 2)
+
+            # map depth
+            if self.z_array is not None:
+                z_bins = self.z_array.astype(float)
+            else:
+                z_bins = np.arange(self.z_min, self.z_max + self.dz, self.dz).astype(float)
+
+            if len(z_bins) == 1:
+                df["LEV_M"] = z_bins[0]
+            else:
+                z_bins[-1] = z_bins[-1] + 0.001  # make sure, last values are included while cutting using pandas
+                df["LEV_M"] = pd.cut(df["LEV_M"], bins=z_bins, right=False, labels=z_bins[:-1])
+
+            # check data types
+            df = df.astype({"DATEANDTIME": str, "LEV_M": float, "LATITUDE": float, "LONGITUDE": float, "VAL": float})
+
+            # join grid and parameter table and return table
+            joined = df.merge(self.grid, on=["LATITUDE", "LONGITUDE", "LEV_M"], how="outer")
+            joined.rename(columns={"VAL": table}, inplace=True)
+            joined.to_csv(f"{table}_grid.csv")
+
+
 def drop_land_cells(df_wide):
     # get parameter columns
     param_tables = [x for x in df_wide.columns if x.startswith("P_")]
