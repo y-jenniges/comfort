@@ -1,19 +1,20 @@
 import unittest
 import pandas as pd
 import numpy as np
-from project_configuration import globals
 from src.preprocessing.units import UnitsConverter, ConversionFormulas, oxygen_saturation, atg, compute_theta
 from src.database.information import get_table_as_df, does_table_exist
 from src.database.communication import create_connection
 
-units_test_table = "C:/Users/yvjennig/Desktop/test_files/test_files.xlsx"
+units_test_table = "test_files.xlsx"
+db_path = "C:/Users/yvjennig/PycharmProjects/data/comfort.sqlite"
+db_path_preprocessed = "C:/Users/yvjennig/PycharmProjects/data/6_comfort_potT.sqlite"
 
 
 class UnitsConverterTest(unittest.TestCase):
     def test_convert_units(self):
         # init converter
         default_units_id = 19
-        connection = create_connection(globals.db_path)
+        connection = create_connection(db_path)
         default_units = pd.DataFrame({"NAME_TABLE": ["dummy"], "UNITS_ID_DEFAULT": [default_units_id]})
         units = pd.DataFrame({"ID": list(range(0, 27))})
         value_column = "VAL"
@@ -60,10 +61,14 @@ class UnitsConverterTest(unittest.TestCase):
 
 class ConversionFormulasTest(unittest.TestCase):
     def testCalculation(self):
+        connection = create_connection(db_path_preprocessed)
+        formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
+
         param_name = "test"
         use_density = False
         df = pd.DataFrame()
-        self.assertEqual(self.formulas.identical_units(df, param_name, use_density), df)
+        self.assertTrue(df.equals(formulas.identical_units(df, param_name, use_density)))
+        # self.assertEqual(formulas.identical_units(df, param_name, use_density), df)
 
     def _test_func(self, conversion_func, df_in, param_name, precision):
         print(f"unitsTest.ConversionFormulasTest.test_{conversion_func.__name__}: {param_name}")
@@ -83,7 +88,7 @@ class ConversionFormulasTest(unittest.TestCase):
         self.assertTrue(is_successful)
 
     def test_identical_units(self):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
         df_in = pd.DataFrame({"VAL": [None, 1, 2, 3]})
         df_out = formulas.identical_units(df_in, "NITRATE")
@@ -91,7 +96,7 @@ class ConversionFormulasTest(unittest.TestCase):
         self.assertTrue(df_in.equals(df_out))
 
     def test_no_conversion(self):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
         df_in = pd.DataFrame({"VAL": [None, 1, 2, 3]})
         df_out = formulas.no_conversion(df_in, "NITRATE")
@@ -99,7 +104,7 @@ class ConversionFormulasTest(unittest.TestCase):
         self.assertTrue(df_in.equals(df_out))
 
     def test_milliEquivalentPerLiter_micromolPerKilogram(self, precision=128):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
 
         # test cases downloaded from OceanShell application as described in the report of the COMFORT dataset v3
@@ -112,7 +117,7 @@ class ConversionFormulasTest(unittest.TestCase):
                         df_in=df_in, param_name=param_name, precision=precision)
 
     def test_microgramPerLiter_microgramPerKilogram(self, precision=0.5):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
 
         # test cases downloaded from OceanShell application as described in the report of the COMFORT dataset v3
@@ -140,7 +145,7 @@ class ConversionFormulasTest(unittest.TestCase):
                         df_in=df_in, param_name=param_name, precision=precision)
 
     def test_millimolPerLiter_micromolPerKilogram(self, precision=0.5):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
 
         # test cases downloaded from OceanShell application as described in the report of the COMFORT dataset v3
@@ -154,7 +159,7 @@ class ConversionFormulasTest(unittest.TestCase):
                         df_in=df_in, param_name=param_name, precision=precision)
 
     def test_nanomolPerKilogram_femtomolPerKilogram(self, precision=0.005):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
 
         param_name = "SF6"
@@ -165,7 +170,7 @@ class ConversionFormulasTest(unittest.TestCase):
                         df_in=df_in, param_name=param_name, precision=precision)
 
     def test_milliliterPerLiter_micromolPerKilogram(self, precision=0.05):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
 
         param_name = "OXYGEN"
@@ -186,7 +191,7 @@ class ConversionFormulasTest(unittest.TestCase):
         pass
 
     def test_percent_micromolPerKilogram(self, precision=0.5):
-        connection = create_connection(globals.db_path_preprocessed)
+        connection = create_connection(db_path_preprocessed)
         formulas = ConversionFormulas(get_table_as_df(connection, "UNITS").sort_values("ID"))
 
         param_name = "OXYGEN"
