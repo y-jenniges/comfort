@@ -2,7 +2,6 @@
 import re
 import numpy as np
 
-
 # Only allow safe SQL identifiers (letters, digits, underscores)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
