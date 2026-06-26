@@ -49,8 +49,8 @@ def get_min_max_dates(conn, table_name="e_combined", time_column="DATEANDTIME"):
     cur = conn.cursor()
 
     # Fetch min/max dates
-    min_date = pd.Timestamp(cur.execute(f"select min({time_column}) from {table_name};").fetchone()[0])
-    max_date = pd.Timestamp(cur.execute(f"select max({time_column}) from {table_name};").fetchone()[0])
+    min_date = pd.Timestamp(cur.execute(f"SELECT MIN({time_column}) FROM {table_name};").fetchone()[0])
+    max_date = pd.Timestamp(cur.execute(f"SELECT MAX({time_column}) FROM {table_name};").fetchone()[0])
     return min_date, max_date
 
 
