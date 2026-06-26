@@ -1,26 +1,31 @@
-database package
-====================
+comfort.database package
+========================
 
-communication module
----------------------------------
-
-.. automodule:: database.communication
+.. automodule:: comfort.database
    :members:
    :undoc-members:
    :show-inheritance:
 
-viewsAndTables module
-----------------------------------
+comfort.database.communication
+-------------------------------
 
-.. automodule:: database.viewsAndTables
+.. automodule:: comfort.database.communication
    :members:
    :undoc-members:
    :show-inheritance:
 
-Module contents
----------------
+comfort.database.information
+-----------------------------
 
-.. automodule:: database
+.. automodule:: comfort.database.information
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+comfort.database.structure
+---------------------------
+
+.. automodule:: comfort.database.structure
    :members:
    :undoc-members:
    :show-inheritance:

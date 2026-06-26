@@ -1,19 +1,31 @@
-plot package
-================
+comfort.plot package
+=====================
 
-
-count module
----------------------
-
-.. automodule:: plot.count
+.. automodule:: comfort.plot
    :members:
    :undoc-members:
    :show-inheritance:
 
-Module contents
----------------
+comfort.plot.hist
+------------------
 
-.. automodule:: plot
+.. automodule:: comfort.plot.hist
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+comfort.plot.box
+-----------------
+
+.. automodule:: comfort.plot.box
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+comfort.plot.count
+-------------------
+
+.. automodule:: comfort.plot.count
    :members:
    :undoc-members:
    :show-inheritance:

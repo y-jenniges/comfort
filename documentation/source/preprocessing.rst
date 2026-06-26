@@ -1,34 +1,31 @@
-preprocessing package
-=========================
+comfort.preprocessing package
+==============================
 
-gridding module
----------------------------------
-
-.. automodule:: preprocessing.gridding
+.. automodule:: comfort.preprocessing
    :members:
    :undoc-members:
    :show-inheritance:
 
-scaling module
+comfort.preprocessing.units
+-----------------------------
+
+.. automodule:: comfort.preprocessing.units
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+comfort.preprocessing.scaling
+-------------------------------
+
+.. automodule:: comfort.preprocessing.scaling
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+comfort.preprocessing.gridding
 --------------------------------
 
-.. automodule:: preprocessing.scaling
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-units module
-------------------------------
-
-.. automodule:: preprocessing.units
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
-Module contents
----------------
-
-.. automodule:: preprocessing
+.. automodule:: comfort.preprocessing.gridding
    :members:
    :undoc-members:
    :show-inheritance:
