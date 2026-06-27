@@ -1,4 +1,4 @@
-"""Module containing functions to manage views and tables."""
+"""Functions to manage views and tables in the COMFORT database."""
 import logging
 import os
 import sqlite3
@@ -9,8 +9,7 @@ from ..util.sqlite_utils import validate_identifier
 
 
 def execute_sql_scripts(conn, sql_folder="sql_scripts/", prefix="create_view_"):
-    """
-    Execute all SQL scripts in the specified folder whose name starts with prefix.
+    """Execute all SQL scripts in a folder whose name starts with prefix.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -45,9 +44,9 @@ def execute_sql_scripts(conn, sql_folder="sql_scripts/", prefix="create_view_"):
 
 def create_extended_parameter_tables(conn, table_type="view", parameters=None,
                                      add_temperature=True, add_salinity=True, quality_flags=None):
-    """
-    Create an extended table/view for the given parameters, adding lat/lon/datetime and
-    optionally temperature and salinity columns.
+    """Create extended table/view for each parameter with lat/lon/datetime.
+
+    Optionally joins temperature and salinity columns.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -69,11 +68,11 @@ def create_extended_parameter_tables(conn, table_type="view", parameters=None,
     ts_join = ""
     ts_select = ""
     if add_temperature:
-        ts_join += "left join P_TEMPERATURE as temp on (t.LEV_M=temp.LEV_M and temp.id=s.id) "
-        ts_select += ", temp.VAL as temperature"
+        ts_join += "LEFT JOIN P_TEMPERATURE AS temp ON (t.LEV_M=temp.LEV_M AND temp.id=s.id) "
+        ts_select += ", temp.VAL AS temperature"
     if add_salinity:
-        ts_join += "left join P_SALINITY as sal on (t.LEV_M=sal.LEV_M and sal.id=s.id) "
-        ts_select += ", sal.VAL as salinity"
+        ts_join += "LEFT JOIN P_SALINITY AS sal ON (t.LEV_M=sal.LEV_M AND sal.id=s.id) "
+        ts_select += ", sal.VAL AS salinity"
 
     # Define parameter names
     if not parameters:
@@ -98,7 +97,7 @@ def create_extended_parameter_tables(conn, table_type="view", parameters=None,
         query = (f"CREATE {table_type} IF NOT EXISTS {new_name} AS "
                  f"SELECT t.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME {ts_select} "
                  f"FROM {table_name} AS t "
-                 f"lefLEFT JOIN STATION AS s ON t.id=s.id "
+                 f"LEFT JOIN STATION AS s ON t.id=s.id "
                  f"{ts_join} "
                  f"{quality_statement};")
         logging.info(f"create_extended_parameter_tables: {query}")
@@ -106,12 +105,12 @@ def create_extended_parameter_tables(conn, table_type="view", parameters=None,
 
         tables_params[new_name] = param_name.upper()
 
+    conn.commit()
     return tables_params
 
 
 def remove_tables_like(conn, like_pattern="E|_%", escape_char="|", table_type="view", tables_except=None):
-    """
-    Drop views/tables whose names match the given LIKE pattern.
+    """Drop views/tables whose names match the given LIKE pattern.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -133,14 +132,13 @@ def remove_tables_like(conn, like_pattern="E|_%", escape_char="|", table_type="v
         logging.info(f"remove_tables_like: {query}")
         cur.execute(query)
 
-    # Clean db
-    cur.execute("VACUUM;")
+    conn.commit()
 
 
 def create_combined_parameter_table(conn, parameters, quality_flags=None, columns=None, table_type="view"):
-    """
-    Create a table/view that combines multiple parameters into a single UNION ALL query.
-    A PARAM_NAME column is added. Assumes P_% tables exist.
+    """Create a UNION ALL table/view combining multiple parameters.
+
+    Adds a PARAM_NAME column. Assumes P_* tables exist.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -183,13 +181,13 @@ def create_combined_parameter_table(conn, parameters, quality_flags=None, column
     query = (f"CREATE {table_type} IF NOT EXISTS P_COMBINED AS "
              f"SELECT * FROM ({' UNION ALL '.join(select_params)});")
     conn.cursor().execute(query)
+    conn.commit()
 
-
+# @todo check/test
 def create_wide_parameter_table(conn, parameters, quality_flags=None, table_type="table", table_name="wide"):
-    """
-    Create a wide table joining multiple parameter tables on (LATITUDE, LONGITUDE, LEV_M, DATEANDTIME).
+    """Create a wide table joining parameters on (LATITUDE, LONGITUDE, LEV_M, DATEANDTIME).
 
-    Warning: this function may produce unexpected row counts when quality flags are applied.
+    Warning: may produce unexpected row counts when quality flags are applied.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -226,3 +224,4 @@ def create_wide_parameter_table(conn, parameters, quality_flags=None, table_type
          f"{join_statement} "
          f"{quality_statement};")
     cur.execute(q)
+    conn.commit()
