@@ -1,4 +1,4 @@
-"""Module containing functions to get information from the database/from tables."""
+"""Functions to query metadata from the COMFORT database."""
 import logging
 import pandas as pd
 import numpy as np
@@ -8,8 +8,7 @@ from ..util.sqlite_utils import validate_identifier
 
 
 def does_table_exist(conn, table_name, table_type="table"):
-    """
-    Check if a table/view with the given name exists. Case-sensitive.
+    """Check if a table/view exists (case-sensitive).
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -31,8 +30,7 @@ def does_table_exist(conn, table_name, table_type="table"):
 
 
 def get_min_max_dates(conn, table_name="e_combined", time_column="DATEANDTIME"):
-    """
-    Fetch minimum and maximum dates from a table.
+    """Fetch minimum and maximum dates from a table.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -83,8 +81,7 @@ def get_num_samples(conn, table_name, table_type="table", quality_flags=None):
 
 
 def get_table_as_df(conn, table_name, columns=None):
-    """
-    Fetch a table from the database as a pandas DataFrame.
+    """Fetch a table from the database as a DataFrame.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
