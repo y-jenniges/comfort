@@ -1,4 +1,4 @@
-"""Named quality-flag presets, SQL clause builders, and DataFrame QC filters for COMFORT data."""
+"""Quality-flag presets, SQL clause builders and DataFrame QC filters."""
 from __future__ import annotations
 
 import pandas as pd
@@ -46,10 +46,8 @@ def apply_qc_flags(df: pd.DataFrame,
                    quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None) -> pd.DataFrame:
     """Filter a DataFrame by quality flags.
 
-    Provides the same filtering as the SQL-level ``quality_flags`` parameter on
-    :func:`comfort.io.read_parameter` and friends, but operates on an already-loaded
-    DataFrame — useful when data was loaded without filtering and needs to be
-    cleaned afterwards.
+    Same filtering as the SQL-level ``quality_flags`` on
+    :func:`comfort.io.read_parameter`, but on an already-loaded DataFrame.
 
     Args:
         df (pandas.DataFrame): DataFrame with QC flag columns (e.g. PQF1, PQF2, SQF).
