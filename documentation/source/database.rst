@@ -6,14 +6,6 @@ comfort.database package
    :undoc-members:
    :show-inheritance:
 
-comfort.database.communication
--------------------------------
-
-.. automodule:: comfort.database.communication
-   :members:
-   :undoc-members:
-   :show-inheritance:
-
 comfort.database.information
 -----------------------------
 
