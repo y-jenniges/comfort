@@ -63,18 +63,18 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
                    depth_min: float | None = None, depth_max: float | None = None,
                    date_min: str | None = None, date_max: str | None = None,
                    limit: int | None = None) -> pd.DataFrame:
-    """Read a P_* parameter table as a DataFrame, with optional quality filtering.
+    """Read a P_* parameter table as a DataFrame with optional QC filtering.
 
     When any spatial or temporal filter is supplied the ``station`` table is
     joined automatically and ``LATITUDE``, ``LONGITUDE`` and ``DATEANDTIME``
-    columns are included in the result.
+    columns are included.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
-        param_name (str): Parameter name (without the ``'P_'`` prefix).
-        quality_flags (list[QCFilter] or list[tuple[str, str]]): Quality flag
-            filters, e.g. ``QC_GOOD``.
-        profiles (list[int]): Profile numbers to load.  ``None`` loads all.
+        param_name (str): Parameter name (without ``'P_'`` prefix).
+        quality_flags (list[QCFilter] or list[tuple[str, str]]): QC filters,
+            e.g. ``QC_GOOD``.
+        profiles (list[int]): Profile numbers to load. ``None`` loads all.
         lat_min (float): Minimum latitude [degrees N].
         lat_max (float): Maximum latitude [degrees N].
         lon_min (float): Minimum longitude [degrees E].
@@ -83,8 +83,8 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
         depth_max (float): Maximum depth [m].
         date_min (str or datetime-like): Start date (inclusive).
         date_max (str or datetime-like): End date (inclusive).
-        limit (int): Maximum number of rows to return.  ``None`` returns all
-            matching rows.  Useful as a safety net for large tables.
+        limit (int): Maximum number of rows to return. ``None`` returns all.
+            Useful as a safeguard for large tables.
     Returns:
         pandas.DataFrame
     """
@@ -159,20 +159,17 @@ def read_extended(conn: sqlite3.Connection, param_name: str,
                   limit: int | None = None) -> pd.DataFrame:
     """Read an E_* extended view (parameter + lat/lon/time) as a DataFrame.
 
-    Low-level helper. Prefer :func:`load_comfort` for most use cases, it
-    handles the E_* fallback automatically, pushes all filters to SQL, and
-    does not require the views to be pre-created.
-
+    Low-level helper. Prefer :func:`load_comfort` for most use cases.
     The E_* views must be created first via
     :func:`comfort.database.structure.create_extended_parameter_tables`.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
-        param_name (str): Parameter name (without the ``'E_'`` prefix).
-        quality_flags (list[QCFilter] or list[tuple[str, str]]): Quality flag
-            filters, e.g. ``QC_GOOD``.
-        limit (int): Maximum number of rows to return.  ``None`` returns all
-            matching rows.  Useful as a safety net for large tables.
+        param_name (str): Parameter name (without ``'E_'`` prefix).
+        quality_flags (list[QCFilter] or list[tuple[str, str]]): QC filters,
+            e.g. ``QC_GOOD``.
+        limit (int): Maximum number of rows to return. ``None`` returns all.
+            Useful as a safeguard for large tables.
     Returns:
         pandas.DataFrame
     """
@@ -196,19 +193,18 @@ def describe_variables(conn: sqlite3.Connection,
                        parameters: list[str] | None = None,
                        quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None) -> pd.DataFrame:
     """Summarise available parameters: sample counts, depth range, value range,
-    units, instruments, and platforms.
+    units, instruments and platforms.
 
-    Lookup tables (``UNITS``, ``INSTRUMENT``, ``PLATFORM``) are used to resolve
-    IDs to human-readable names when present; otherwise IDs are shown as
-    strings.  Parameters with multiple distinct values show all names separated
-    by `` / ``.  When multiple units are found for a single parameter, a warning
-    is logged.
+    Lookup tables (``UNITS``, ``INSTRUMENT``, ``PLATFORM``) resolve IDs to
+    human-readable names when present; otherwise IDs are shown as strings.
+    Parameters with multiple distinct values show all names separated by
+    `` / ``.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
-        parameters (list[str]): Parameter names to describe (without ``P_``
-            prefix). ``None`` describes all available parameters.
-        quality_flags (list[list[str, str]]): Optional quality flag filters applied
+        parameters (list[str]): Parameter names (without ``P_`` prefix).
+            ``None`` describes all available parameters.
+        quality_flags (list[list[str, str]]): Optional QC filters applied
             when counting samples and computing ranges.
     Returns:
         pandas.DataFrame: One row per parameter with columns
@@ -303,7 +299,7 @@ def describe_variables(conn: sqlite3.Connection,
     for _, row in result.iterrows():
         if len(row["units_ids"]) > 1:
             logging.warning(
-                "%s contains %d different units (%s) — values may not be comparable",
+                "%s contains %d different units (%s) - values may not be comparable",
                 row["parameter"], len(row["units_ids"]), row["units"],
             )
     result = result.drop(columns="units_ids")
@@ -397,8 +393,8 @@ def subset_region(df: pd.DataFrame,
     """Filter a DataFrame to a geographic, depth and/or time region.
 
     Logs a warning when a requested bound cannot be applied because the
-    corresponding column is absent from df. Recognised columns: LATITUDE,
-    LONGITUDE, LEV_M, DATEANDTIME.
+    corresponding column is absent. Recognised columns: LATITUDE, LONGITUDE,
+    LEV_M, DATEANDTIME.
 
     Args:
         df (pandas.DataFrame): Extended parameter or station DataFrame.
@@ -441,7 +437,7 @@ def subset_region(df: pd.DataFrame,
     if date_min is not None or date_max is not None:
         if "DATEANDTIME" not in df.columns:
             logging.warning(
-                "subset_region: date filter requested but column 'DATEANDTIME' not found — filter skipped"
+                "subset_region: date filter requested but column 'DATEANDTIME' not found - filter skipped"
             )
         else:
             dates = pd.to_datetime(df["DATEANDTIME"])
@@ -468,21 +464,19 @@ def load_comfort(
 ) -> xr.Dataset | dict[str, pd.DataFrame]:
     """Load COMFORT data into a filtered xarray Dataset or dict of DataFrames.
 
-    All filtering (QC flags, spatial bounds and date range) is pushed down
-    to SQL so only the requested rows are loaded into memory. Spatial/temporal
-    filters require extended views (E_*) or a ``station`` table; the function
-    tries E_* first and falls back to a direct ``P_* JOIN station`` query.
+    All filtering (QC flags, spatial bounds and date range) is pushed to SQL
+    so only the requested rows are loaded into memory. Tries E_* views first
+    and falls back to ``P_* JOIN station``.
 
     For xarray output each parameter is interpolated onto ``target_depths``
-    (default: WOD standard levels) and arranged into a Dataset with dimensions
-    ``(profile, depth)``.
+    (default: WOD standard levels) with dimensions ``(profile, depth)``.
 
     Args:
-        db_path_or_conn (str, Path, or sqlite3.Connection): Path to the COMFORT
+        db_path_or_conn (str, Path or sqlite3.Connection): Path to the COMFORT
             SQLite database or an existing open connection. When a path is
             given, the connection is opened and closed automatically. When a
             connection is passed, it is left open.
-        parameters (list[str]): Parameter names to load (without prefix).
+        parameters (list[str]): Parameter names (without prefix).
             ``None`` loads all available parameters.
         quality_flags: QC filter preset, e.g. :data:`comfort.qc.QC_GOOD`.
             ``None`` means no filtering.
@@ -494,10 +488,9 @@ def load_comfort(
         depth_max (float): Maximum depth [m].
         date_min (str or datetime-like): Start date (inclusive).
         date_max (str or datetime-like): End date (inclusive).
-        target_depths (array-like): Depth levels [m] to interpolate onto
-            for xarray output. Defaults to :data:`WOD_STANDARD_DEPTHS`.
-        as_xarray (bool): ``True`` returns ``xr.Dataset`` with dims
-            ``(profile, depth)``. ``False`` returns
+        target_depths (array-like): Depth levels [m] for interpolation.
+            Defaults to :data:`WOD_STANDARD_DEPTHS`.
+        as_xarray (bool): ``True`` returns ``xr.Dataset``, ``False`` returns
             ``dict[param_name, pandas.DataFrame]``.
         normalise_columns (bool): When ``True`` and ``as_xarray=False``,
             rename all DataFrame columns to lowercase. Default ``False``.
@@ -507,10 +500,8 @@ def load_comfort(
             silently skipped when they are absent.
     Returns:
         xarray.Dataset or dict[str, pandas.DataFrame].
-        For the dict path each DataFrame has the measurement column named after
-        the parameter (e.g. ``"NITRATE"``), not the raw database column ``"VAL"``.
-        Pass this name explicitly when calling analysis functions, e.g.
-        ``vertical_gradient(df, param_col="NITRATE")``.
+        For the dict path each DataFrame has the measurement column named
+        after the parameter (e.g. ``"NITRATE"``), not ``"VAL"``.
     """
     # Collect geo/temporal filter arguments
     geo_kwargs = dict(
@@ -576,7 +567,7 @@ def load_comfort(
                             for u in sorted(uid_set)
                         )
                         logging.warning(
-                            "%s contains %d different units (%s) — "
+                            "%s contains %d different units (%s) - "
                             "values may not be comparable; consider convert_units=True",
                             param, len(uid_set), names,
                         )
