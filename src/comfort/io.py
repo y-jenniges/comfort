@@ -14,6 +14,7 @@ import pandas as pd
 if TYPE_CHECKING:
     import xarray as xr
 
+from .analysis import interpolate_depth_levels
 from .database.information import get_names_of_all_parameter_tables
 from .qc import QCFilter, build_where_clause
 from .util.sqlite_utils import validate_identifier
@@ -56,8 +57,17 @@ def list_parameters(conn: sqlite3.Connection) -> list[str]:
 
 def read_parameter(conn: sqlite3.Connection, param_name: str,
                    quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
-                   profiles: list[int] | None = None) -> pd.DataFrame:
+                   profiles: list[int] | None = None,
+                   lat_min: float | None = None, lat_max: float | None = None,
+                   lon_min: float | None = None, lon_max: float | None = None,
+                   depth_min: float | None = None, depth_max: float | None = None,
+                   date_min: str | None = None, date_max: str | None = None,
+                   limit: int | None = None) -> pd.DataFrame:
     """Read a P_* parameter table as a DataFrame, with optional quality filtering.
+
+    When any spatial or temporal filter is supplied the ``station`` table is
+    joined automatically and ``LATITUDE``, ``LONGITUDE`` and ``DATEANDTIME``
+    columns are included in the result.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -65,25 +75,64 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
         quality_flags (list[QCFilter] or list[tuple[str, str]]): Quality flag
             filters, e.g. ``QC_GOOD``.
         profiles (list[int]): Profile numbers to load.  ``None`` loads all.
+        lat_min (float): Minimum latitude [degrees N].
+        lat_max (float): Maximum latitude [degrees N].
+        lon_min (float): Minimum longitude [degrees E].
+        lon_max (float): Maximum longitude [degrees E].
+        depth_min (float): Minimum depth [m].
+        depth_max (float): Maximum depth [m].
+        date_min (str or datetime-like): Start date (inclusive).
+        date_max (str or datetime-like): End date (inclusive).
+        limit (int): Maximum number of rows to return.  ``None`` returns all
+            matching rows.  Useful as a safety net for large tables.
     Returns:
         pandas.DataFrame
     """
     # Validate identifier
     validate_identifier(param_name)
 
-    # Build WHERE conditions and parameter list
-    conditions = [f"{col}{cond}" for col, cond in (quality_flags or [])]
-    params = []
-    if profiles is not None:
-        placeholders = ",".join("?" * len(profiles))
-        conditions.append(f"PROFILE_NUMBER IN ({placeholders})")
-        params.extend(profiles)
+    # Check if geo filters are requested
+    has_geo = any(v is not None for v in (
+        lat_min, lat_max, lon_min, lon_max,
+        depth_min, depth_max, date_min, date_max,
+    ))
+    params: list = []
 
-    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    if has_geo:
+        # Build query with geo, profile and quality filters
+        conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
+        if profiles is not None:
+            placeholders = ",".join("?" * len(profiles))
+            conditions.append(f"p.PROFILE_NUMBER IN ({placeholders})")
+            params.extend(profiles)
+        _append_geo_conditions(
+            conditions, params, "s.", "s.", "p.", "s.",
+            lat_min, lat_max, lon_min, lon_max,
+            depth_min, depth_max, date_min, date_max,
+        )
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = (
+            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME "
+            f"FROM P_{param_name.upper()} p "
+            f"JOIN station s ON p.ID = s.ID {where}"
+        )
+    else:
+        # Build query with quality and profile filters
+        conditions = [f"{col}{cond}" for col, cond in (quality_flags or [])]
+        if profiles is not None:
+            placeholders = ",".join("?" * len(profiles))
+            conditions.append(f"PROFILE_NUMBER IN ({placeholders})")
+            params.extend(profiles)
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"SELECT * FROM P_{param_name.upper()} {where}"
 
-    # Fetch the parameter table
+    # Add optional limit to query
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+
+    # Fetch data
     cur = conn.cursor()
-    ex = cur.execute(f"SELECT * FROM P_{param_name.upper()} {where};", params)
+    ex = cur.execute(sql + ";", params)
     cols = [desc[0] for desc in cur.description]
     return pd.DataFrame(ex.fetchall(), columns=cols)
 
@@ -106,7 +155,8 @@ def read_station(conn: sqlite3.Connection) -> pd.DataFrame:
 
 
 def read_extended(conn: sqlite3.Connection, param_name: str,
-                  quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None) -> pd.DataFrame:
+                  quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
+                  limit: int | None = None) -> pd.DataFrame:
     """Read an E_* extended view (parameter + lat/lon/time) as a DataFrame.
 
     Low-level helper. Prefer :func:`load_comfort` for most use cases, it
@@ -121,6 +171,8 @@ def read_extended(conn: sqlite3.Connection, param_name: str,
         param_name (str): Parameter name (without the ``'E_'`` prefix).
         quality_flags (list[QCFilter] or list[tuple[str, str]]): Quality flag
             filters, e.g. ``QC_GOOD``.
+        limit (int): Maximum number of rows to return.  ``None`` returns all
+            matching rows.  Useful as a safety net for large tables.
     Returns:
         pandas.DataFrame
     """
@@ -131,8 +183,11 @@ def read_extended(conn: sqlite3.Connection, param_name: str,
     where = build_where_clause(quality_flags)
 
     # Connect to db and fetch data
+    sql = f"SELECT * FROM E_{param_name.upper()} {where}"
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
     cur = conn.cursor()
-    ex = cur.execute(f"SELECT * FROM E_{param_name.upper()} {where};")
+    ex = cur.execute(sql + ";")
     cols = [desc[0] for desc in cur.description]
     return pd.DataFrame(ex.fetchall(), columns=cols)
 
@@ -140,12 +195,14 @@ def read_extended(conn: sqlite3.Connection, param_name: str,
 def describe_variables(conn: sqlite3.Connection,
                        parameters: list[str] | None = None,
                        quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None) -> pd.DataFrame:
-    """Summarise available parameters: sample counts, depth range, and value range.
+    """Summarise available parameters: sample counts, depth range, value range,
+    units, instruments, and platforms.
 
-    When a ``UNITS`` table is present in the database, the ``units_id`` foreign
-    key is resolved to a human-readable unit string and returned as a ``units``
-    column; otherwise ``units_id`` (integer) is returned as-is. Parameters
-    with multiple unit IDs show all resolved unit strings separated by `` / ``.
+    Lookup tables (``UNITS``, ``INSTRUMENT``, ``PLATFORM``) are used to resolve
+    IDs to human-readable names when present; otherwise IDs are shown as
+    strings.  Parameters with multiple distinct values show all names separated
+    by `` / ``.  When multiple units are found for a single parameter, a warning
+    is logged.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -155,9 +212,9 @@ def describe_variables(conn: sqlite3.Connection,
             when counting samples and computing ranges.
     Returns:
         pandas.DataFrame: One row per parameter with columns
-            [parameter, n_samples, n_stations, n_profiles, n_instruments
-             depth_min_m, depth_max_m, val_min, val_max,
-             units (or units_id)].
+            ``[parameter, n_samples, n_stations, n_profiles, n_instruments,
+            depth_min_m, depth_max_m, val_min, val_max,
+            units, instruments, platforms]``.
     """
     # Get a list of all parameters
     all_params = list_parameters(conn)
@@ -179,6 +236,9 @@ def describe_variables(conn: sqlite3.Connection,
 
     # Compute aggregate statistics per parameter
     where = build_where_clause(quality_flags)
+    qc_where_aliased = build_where_clause(quality_flags, "p")
+    has_platform_id = _station_has_column(conn, "PLATFORM_ID")
+
     rows = []
     for param in params:
         # Validate identifier
@@ -190,7 +250,8 @@ def describe_variables(conn: sqlite3.Connection,
         # Connect to db and fetch parameter statistics
         cur = conn.cursor()
         cur.execute(
-            f"SELECT COUNT(*), COUNT(DISTINCT ID), COUNT(DISTINCT PROFILE_NUMBER), count(DISTINCT INSTRUMENT_ID), "
+            f"SELECT COUNT(*), COUNT(DISTINCT ID), COUNT(DISTINCT PROFILE_NUMBER), "
+            f"COUNT(DISTINCT INSTRUMENT_ID), "
             f"MIN(LEV_M), MAX(LEV_M), MIN(VAL), MAX(VAL) "
             f"FROM {table} {where};"
         )
@@ -202,7 +263,19 @@ def describe_variables(conn: sqlite3.Connection,
         cur.execute(f"SELECT DISTINCT INSTRUMENT_ID FROM {table} {where};")
         inst_ids = [row[0] for row in cur.fetchall() if row[0] is not None]
 
-        # Add to results df
+        # Get platform IDs via station join
+        platform_ids: list[int] = []
+        if has_platform_id:
+            try:
+                cur.execute(
+                    f"SELECT DISTINCT s.PLATFORM_ID "
+                    f"FROM {table} p JOIN station s ON p.ID = s.ID "
+                    f"{qc_where_aliased};"
+                )
+                platform_ids = [row[0] for row in cur.fetchall() if row[0] is not None]
+            except Exception:
+                pass
+
         rows.append({
             "parameter": param,
             "n_samples": n,
@@ -215,19 +288,27 @@ def describe_variables(conn: sqlite3.Connection,
             "val_max": vmax,
             "units_ids": unit_ids,
             "instrument_ids": inst_ids,
+            "platform_ids": platform_ids,
         })
     result = pd.DataFrame(rows)
 
-    # Get names of unit IDs
+    # Resolve unit IDs to names
     id_to_unit = _load_units_map(conn)
     result["units"] = result["units_ids"].apply(
         lambda ids: " / ".join(
             id_to_unit.get(i, str(i)) for i in sorted(ids)
         ) if ids else None
     )
+    # Warn about mixed units
+    for _, row in result.iterrows():
+        if len(row["units_ids"]) > 1:
+            logging.warning(
+                "%s contains %d different units (%s) — values may not be comparable",
+                row["parameter"], len(row["units_ids"]), row["units"],
+            )
     result = result.drop(columns="units_ids")
 
-    # Get names of instruments
+    # Resolve instrument IDs to names
     id_to_instrument = _load_instrument_map(conn)
     result["instruments"] = result["instrument_ids"].apply(
         lambda ids: " / ".join(
@@ -235,6 +316,15 @@ def describe_variables(conn: sqlite3.Connection,
         ) if ids else None
     )
     result = result.drop(columns="instrument_ids")
+
+    # Resolve platform IDs to names
+    id_to_platform = _load_platform_map(conn)
+    result["platforms"] = result["platform_ids"].apply(
+        lambda ids: " / ".join(
+            id_to_platform.get(i, str(i)) for i in sorted(ids)
+        ) if ids else None
+    )
+    result = result.drop(columns="platform_ids")
 
     return result
 
@@ -271,6 +361,32 @@ def _load_instrument_map(conn):
     except Exception as exc:
         logging.debug("_load_instrument_map: could not resolve INSTRUMENT table (%s)", exc)
         return {}
+
+
+def _load_platform_map(conn):
+    """Return a dict mapping PLATFORM ID -> platform name, or {} when PLATFORM table is absent."""
+    from .database.information import does_table_exist
+
+    try:
+        if not does_table_exist(conn, "PLATFORM"):
+            return {}
+
+        cur = conn.cursor()
+        cur.execute("SELECT ID, NAME FROM PLATFORM;")
+        return {row[0]: row[1] for row in cur.fetchall()}
+    except Exception as exc:
+        logging.debug("_load_platform_map: could not resolve PLATFORM table (%s)", exc)
+        return {}
+
+
+def _station_has_column(conn, column: str) -> bool:
+    """Check whether the station table has a given column."""
+    try:
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(station);")
+        return any(row[1].upper() == column.upper() for row in cur.fetchall())
+    except Exception:
+        return False
 
 
 def subset_region(df: pd.DataFrame,
@@ -412,8 +528,22 @@ def load_comfort(
         if parameters is None:
             parameters = list_parameters(conn)
 
-        # Resolve instrument IDs to names for xarray coordinates
+        # Resolve lookup tables for xarray coordinates
         _instrument_map = _load_instrument_map(conn)
+        _platform_map = _load_platform_map(conn)
+        _units_map = _load_units_map(conn)
+
+        # Station → platform_id mapping (when column exists)
+        _station_platform: dict[int, int] = {}
+        if _station_has_column(conn, "PLATFORM_ID"):
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT ID, PLATFORM_ID FROM station;")
+                _station_platform = {
+                    row[0]: row[1] for row in cur.fetchall() if row[1] is not None
+                }
+            except Exception:
+                pass
 
         # Build unit converter when requested
         _converter = None
@@ -424,6 +554,9 @@ def load_comfort(
             except ValueError:
                 logging.info("load_comfort: UNITS/DATABASE_TABLES not found, skipping unit conversion")
 
+        # Track per-parameter unit IDs for xarray attrs and warnings
+        _param_unit_ids: dict[str, set] = {}
+
         # Load each parameter with SQL-level filtering
         dfs = {}
         for param in parameters:
@@ -433,6 +566,21 @@ def load_comfort(
                 logging.warning("load_comfort: could not read %s (%s)", param, exc)
                 continue
             if not df.empty:
+                # Track distinct units
+                if "UNITS_ID" in df.columns:
+                    uid_set = set(df["UNITS_ID"].dropna().unique())
+                    _param_unit_ids[param] = uid_set
+                    if len(uid_set) > 1:
+                        names = ", ".join(
+                            _units_map.get(int(u), str(int(u)))
+                            for u in sorted(uid_set)
+                        )
+                        logging.warning(
+                            "%s contains %d different units (%s) — "
+                            "values may not be comparable; consider convert_units=True",
+                            param, len(uid_set), names,
+                        )
+
                 # Convert to default unit before renaming VAL
                 if _converter is not None and "VAL" in df.columns:
                     df = _converter.convert_dataframe(df, f"P_{param}")
@@ -460,7 +608,6 @@ def load_comfort(
 
     # Build xarray Dataset with dims (profile, depth)
     import xarray as xr
-    from .analysis import interpolate_depth_levels  # lazy to avoid circular import
 
     # Target depth levels for interpolation
     depths = np.asarray(
@@ -470,7 +617,7 @@ def load_comfort(
 
     # Collect unique profile numbers across all parameters
     all_profiles = sorted(
-        set().union(*[set(df["PROFILE_NUMBER"].unique()) for df in dfs.values()])
+        set().union(*[df["PROFILE_NUMBER"].unique() for df in dfs.values()])
     )
     n_profiles = len(all_profiles)
     n_depths = len(depths)
@@ -481,12 +628,14 @@ def load_comfort(
         for pid, group in df.groupby("PROFILE_NUMBER"):
             if pid not in meta:
                 row = group.iloc[0]
+                sid = int(row["ID"]) if "ID" in row.index else -1
                 meta[pid] = {
                     "latitude": row.get("LATITUDE", np.nan),
                     "longitude": row.get("LONGITUDE", np.nan),
                     "time": row.get("DATEANDTIME", None),
-                    "station_id": int(row["ID"]) if "ID" in row.index else -1,
+                    "station_id": sid,
                     "instrument_id": int(row["INSTRUMENT_ID"]) if "INSTRUMENT_ID" in row.index else -1,
+                    "platform_id": _station_platform.get(sid, -1),
                 }
 
     # Interpolate each parameter onto target depth levels
@@ -513,6 +662,7 @@ def load_comfort(
     lons = np.array([meta.get(p, {}).get("longitude", np.nan) for p in all_profiles])
     station_ids = np.array([meta.get(p, {}).get("station_id", -1) for p in all_profiles])
     instrument_ids = np.array([meta.get(p, {}).get("instrument_id", -1) for p in all_profiles])
+    platform_ids = np.array([meta.get(p, {}).get("platform_id", -1) for p in all_profiles])
     raw_times = [meta.get(p, {}).get("time") for p in all_profiles]
     try:
         times = pd.to_datetime(raw_times)
@@ -524,6 +674,11 @@ def load_comfort(
         _instrument_map.get(int(iid), str(int(iid))) for iid in instrument_ids
     ])
 
+    # Resolve platform IDs to names; fall back to stringified IDs
+    platforms = np.array([
+        _platform_map.get(int(pid), str(int(pid))) for pid in platform_ids
+    ])
+
     # Assemble xarray Dataset
     ds = xr.Dataset(
         data_vars,
@@ -532,13 +687,25 @@ def load_comfort(
             "profile_id": ("profile", np.array(all_profiles)),
             "station_id": ("profile", station_ids),
             "instrument": ("profile", instruments),
+            "platform": ("profile", platforms),
             "latitude": ("profile", lats),
             "longitude": ("profile", lons),
             "time": ("profile", times),
         },
     )
 
-    # CF-compliant metadata
+    # Attach resolved unit names as variable attributes
+    for param in data_vars:
+        uid_set = _param_unit_ids.get(param, set())
+        if len(uid_set) == 1:
+            uid = next(iter(uid_set))
+            ds[param].attrs["units"] = _units_map.get(int(uid), str(int(uid)))
+        elif len(uid_set) > 1:
+            ds[param].attrs["units"] = " / ".join(
+                _units_map.get(int(u), str(int(u))) for u in sorted(uid_set)
+            )
+
+    # Climate and Forecast (CF) compliant metadata
     ds["depth"].attrs.update({"units": "m", "positive": "down"})
     ds["latitude"].attrs["units"] = "degrees_north"
     ds["longitude"].attrs["units"] = "degrees_east"
