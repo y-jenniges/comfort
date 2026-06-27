@@ -1,9 +1,19 @@
 """Custom SQLite aggregate functions and SQL safety helpers."""
+import logging
 import re
+import sqlite3
 import numpy as np
 
 # Only allow safe SQL identifiers (letters, digits, underscores)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def vacuum(conn):
+    """Run VACUUM on the database. Logs a warning if it fails (e.g. insufficient disk space)."""
+    try:
+        conn.execute("VACUUM;")
+    except sqlite3.OperationalError as e:
+        logging.warning("VACUUM failed: %s", e)
 
 
 def validate_identifier(name):
