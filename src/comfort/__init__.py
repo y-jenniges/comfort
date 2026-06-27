@@ -1,4 +1,4 @@
-"""comfort-db — helper library for the COMFORT oceanographic dataset."""
+"""comfort-db - helper library for the COMFORT oceanographic dataset."""
 
 __version__ = "0.1.0"
 
@@ -9,6 +9,7 @@ from .analysis import detect_depth_col
 from .gridding import Grid, GridManager, SpaceGrid
 from .units import UnitsConverter
 from .scaling import ParamScaler
+from .util.sqlite_utils import vacuum
 
 __all__ = [
     "connect",
@@ -29,4 +30,5 @@ __all__ = [
     "UnitsConverter",
     "ParamScaler",
     "detect_depth_col",
+    "vacuum",
 ]
