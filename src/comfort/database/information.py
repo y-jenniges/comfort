@@ -53,8 +53,7 @@ def get_min_max_dates(conn, table_name="e_combined", time_column="DATEANDTIME"):
 
 
 def get_num_samples(conn, table_name, table_type="table", quality_flags=None):
-    """
-    Get the number of samples in the given table.
+    """Get the number of samples in the given table.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -86,7 +85,7 @@ def get_table_as_df(conn, table_name, columns=None):
     Args:
         conn (sqlite3.Connection): Connection to the database.
         table_name (str): Name of the table to fetch.
-        columns (list[str]): Columns to query. None means all columns.
+        columns (list[str]): Columns to query. ``None`` means all.
     Returns:
         pandas.DataFrame
     """
@@ -108,15 +107,14 @@ def get_table_as_df(conn, table_name, columns=None):
 
 def get_names_of_all_parameter_tables(conn, like_pattern="P|_%", escape_char="|",
                                       include_digits=False, table_type="table"):
-    """
-    Get all table/view names matching the given LIKE pattern.
+    """Get all table/view names matching the given LIKE pattern.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
-        like_pattern (str): SQLite LIKE pattern. Default is 'P|_%'.
-        escape_char (str): Escape character for the LIKE pattern. Default is '|'.
-        include_digits (bool): Whether to include tables whose names contain digits.
-        table_type (str): 'table' or 'view'. Default is 'table'.
+        like_pattern (str): SQLite LIKE pattern.
+        escape_char (str): Escape character for the LIKE pattern.
+        include_digits (bool): Include tables with numeric suffixes.
+        table_type (str): ``'table'`` or ``'view'``. Default is 'table'.
     Returns:
         list[str]: Matching table/view names.
     """
@@ -143,16 +141,15 @@ def get_names_of_all_parameter_tables(conn, like_pattern="P|_%", escape_char="|"
 
 
 def get_minmax(conn, column="LATITUDE", column_type="float", param_tables=None):
-    """
-    Get the global minimum and maximum of a column across all parameter tables.
+    """Get the global min and max of a column across all parameter tables.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
         column (str): Column name to aggregate.
-        column_type (str): 'float', 'int', or 'datetime64'.
-        param_tables (list[str]): Tables to query. None means all parameter tables.
+        column_type (str): ``'float'``, ``'int'`` or ``'datetime64'``.
+        param_tables (list[str]): Tables to query. ``None`` means all.
     Returns:
-        tuple: (column_minimum, column_maximum), or (None, None) on error.
+        tuple: (minimum, maximum), or (None, None) on error.
     """
     # Validate identifier
     validate_identifier(column)
