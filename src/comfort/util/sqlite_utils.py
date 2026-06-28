@@ -1,4 +1,9 @@
-"""Custom SQLite aggregate functions and SQL safety helpers."""
+"""Custom SQLite aggregate functions and SQL safety helpers.
+
+Median and Std adapted from Jenniges (2025), doi:10.5281/zenodo.15827777
+"""
+from __future__ import annotations
+
 import logging
 import re
 import sqlite3
@@ -8,7 +13,7 @@ import numpy as np
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def vacuum(conn):
+def vacuum(conn: sqlite3.Connection) -> None:
     """Run VACUUM on the database. Logs a warning if it fails (e.g. insufficient disk space)."""
     try:
         conn.execute("VACUUM;")
@@ -16,7 +21,7 @@ def vacuum(conn):
         logging.warning("VACUUM failed: %s", e)
 
 
-def validate_identifier(name):
+def validate_identifier(name: str) -> None:
     """Raise ValueError if *name* is not a safe SQL identifier.
 
     Accepts only ASCII letters, digits, and underscores (must start with
