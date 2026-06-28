@@ -1,4 +1,4 @@
-"""Connecting to the real COMFORT database.
+"""Connecting to the COMFORT database.
 
 This example shows how to point the library at your local copy of the
 COMFORT SQLite file and (optionally) a GEBCO bathymetry NetCDF for gridding.
