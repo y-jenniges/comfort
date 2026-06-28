@@ -103,7 +103,7 @@ def info(db_path_or_conn: str | Path | sqlite3.Connection) -> pd.DataFrame:
 
 
 def list_parameters(conn: sqlite3.Connection) -> list[str]:
-    """Return the names of all P_* parameter tables (without the 'P_' prefix).
+    """Return the names of all ``P_*`` parameter tables (without the ``P_`` prefix).
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -243,8 +243,7 @@ def describe_variables(conn: sqlite3.Connection,
 
     Lookup tables (``UNITS``, ``INSTRUMENT``, ``PLATFORM``) resolve IDs to
     human-readable names when present; otherwise IDs are shown as strings.
-    Parameters with multiple distinct values show all names separated by
-    `` / ``.
+    Parameters with multiple distinct values show all names separated by ``/``.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
