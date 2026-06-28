@@ -1,4 +1,9 @@
-"""Functions to manage views and tables in the COMFORT database."""
+"""Functions to manage views and tables in the COMFORT database.
+
+remove_tables_like adapted from Jenniges (2025), doi:10.5281/zenodo.15827777
+"""
+from __future__ import annotations
+
 import logging
 import os
 import sqlite3
@@ -8,7 +13,8 @@ from ..qc import build_where_clause
 from ..util.sqlite_utils import validate_identifier
 
 
-def execute_sql_scripts(conn, sql_folder="sql_scripts/", prefix="create_view_"):
+def execute_sql_scripts(conn: sqlite3.Connection, sql_folder: str = "sql_scripts/",
+                        prefix: str = "create_view_") -> None:
     """Execute all SQL scripts in a folder whose name starts with prefix.
 
     Args:
@@ -42,8 +48,10 @@ def execute_sql_scripts(conn, sql_folder="sql_scripts/", prefix="create_view_"):
             logging.error(f"Error executing {script}: {e}")
 
 
-def create_extended_parameter_tables(conn, table_type="view", parameters=None,
-                                     add_temperature=True, add_salinity=True, quality_flags=None):
+def create_extended_parameter_tables(conn: sqlite3.Connection, table_type: str = "view",
+                                     parameters: list[str] | None = None,
+                                     add_temperature: bool = True, add_salinity: bool = True,
+                                     quality_flags: list | None = None) -> dict[str, str] | None:
     """Create extended table/view for each parameter with lat/lon/datetime.
 
     Optionally joins temperature and salinity columns.
@@ -109,7 +117,8 @@ def create_extended_parameter_tables(conn, table_type="view", parameters=None,
     return tables_params
 
 
-def remove_tables_like(conn, like_pattern="E|_%", escape_char="|", table_type="view", tables_except=None):
+def remove_tables_like(conn: sqlite3.Connection, like_pattern: str = "E|_%", escape_char: str = "|",
+                       table_type: str = "view", tables_except: list[str] | None = None) -> None:
     """Drop views/tables whose names match the given LIKE pattern.
 
     Args:
@@ -135,7 +144,10 @@ def remove_tables_like(conn, like_pattern="E|_%", escape_char="|", table_type="v
     conn.commit()
 
 
-def create_combined_parameter_table(conn, parameters, quality_flags=None, columns=None, table_type="view"):
+def create_combined_parameter_table(conn: sqlite3.Connection, parameters: list[str],
+                                    quality_flags: list | None = None,
+                                    columns: list[str] | None = None,
+                                    table_type: str = "view") -> None:
     """Create a UNION ALL table/view combining multiple parameters.
 
     Adds a PARAM_NAME column. Assumes P_* tables exist.
@@ -181,47 +193,4 @@ def create_combined_parameter_table(conn, parameters, quality_flags=None, column
     query = (f"CREATE {table_type} IF NOT EXISTS P_COMBINED AS "
              f"SELECT * FROM ({' UNION ALL '.join(select_params)});")
     conn.cursor().execute(query)
-    conn.commit()
-
-# @todo check/test
-def create_wide_parameter_table(conn, parameters, quality_flags=None, table_type="table", table_name="wide"):
-    """Create a wide table joining parameters on (LATITUDE, LONGITUDE, LEV_M, DATEANDTIME).
-
-    Warning: may produce unexpected row counts when quality flags are applied.
-
-    Args:
-        conn (sqlite3.Connection): Connection to the database.
-        parameters (list[str]): Parameter names.
-        quality_flags (list[QCFilter] or list[tuple[str, str]]): Quality flag filters.
-        table_type (str): 'table' or 'view'. Default is 'table'.
-        table_name (str): Name for the resulting table. Default is 'wide'.
-    """
-    # Validate identifiers
-    for p in parameters:
-        validate_identifier(p)
-    validate_identifier(table_name)
-
-    # Connect to db
-    cur = conn.cursor()
-
-    # Build quality filter
-    quality_statement = build_where_clause(quality_flags)
-
-    # Assemble parameters and joins for the query
-    value_statement = ", ".join([f"p{i}.VAL AS {param}" for i, param in enumerate(parameters)])
-    join_statement = " ".join(
-        [f"LEFT JOIN P_{param} AS p{i} USING(LATITUDE, LONGITUDE, LEV_M, DATEANDTIME)"
-         for i, param in enumerate(parameters)][1:]
-    )
-
-    # @todo filtering for quality here results in a weird output table!! bug! do not use the quality filter!
-    # @todo the number of samples increases when joining, even without quality_statement
-
-    # Build final query and execute, i.e. build wide parameter table in the db
-    q = (f"CREATE {table_type} IF NOT EXISTS {table_name} AS "
-         f"SELECT p0.LATITUDE, p0.LONGITUDE, p0.LEV_M, p0.DATEANDTIME, {value_statement} "
-         f"FROM P_{parameters[0]} AS p0 "
-         f"{join_statement} "
-         f"{quality_statement};")
-    cur.execute(q)
     conn.commit()
