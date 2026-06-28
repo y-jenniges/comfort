@@ -1,4 +1,5 @@
 """Database communication, querying and schema management for COMFORT."""
+from __future__ import annotations
 
 from .information import (
     does_table_exist,
@@ -11,7 +12,6 @@ from .information import (
 from .structure import (
     create_combined_parameter_table,
     create_extended_parameter_tables,
-    create_wide_parameter_table,
     execute_sql_scripts,
     remove_tables_like,
 )
