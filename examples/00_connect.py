@@ -51,7 +51,8 @@ dfs = comfort.load_comfort(
 )
 for name, df in dfs.items():
     print(
-        f"{name}: {len(df)} rows, profiles {df['PROFILE_NUMBER'].nunique()}, n instruments {df['INSTRUMENT_ID'].nunique()}")
+        f"{name}: {len(df)} rows, profiles {df['PROFILE_NUMBER'].nunique()}, "
+        f"n instruments {df['INSTRUMENT_ID'].nunique()}")
 print()
 
 # 3. xarray output with depth interpolation
