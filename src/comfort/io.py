@@ -44,6 +44,64 @@ WOD_STANDARD_DEPTHS = np.array([
 ], dtype=float)
 
 
+def info(db_path_or_conn: str | Path | sqlite3.Connection) -> pd.DataFrame:
+    """Print a quick summary of the COMFORT database without loading data.
+
+    Shows parameter names, row counts, depth range and date range.
+
+    Args:
+        db_path_or_conn (str, Path or sqlite3.Connection): Path to the
+            COMFORT SQLite database or an existing open connection.
+    Returns:
+        pandas.DataFrame: Summary table (one row per parameter).
+    """
+    # Open connection if path given
+    own_conn = not isinstance(db_path_or_conn, sqlite3.Connection)
+    conn = sqlite3.connect(db_path_or_conn) if own_conn else db_path_or_conn
+    try:
+        params = list_parameters(conn)
+        if not params:
+            logging.warning("info: no parameter tables found")
+            return pd.DataFrame()
+
+        # Collect sample count and depth/date range per parameter
+        rows = []
+        for param in params:
+            validate_identifier(param)
+            table = f"P_{param}"
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT COUNT(*), MIN(LEV_M), MAX(LEV_M) FROM {table};"
+            )
+            n, dmin, dmax = cur.fetchone()
+
+            # Get date range via station join
+            try:
+                cur.execute(
+                    f"SELECT MIN(s.DATEANDTIME), MAX(s.DATEANDTIME) "
+                    f"FROM {table} p JOIN station s ON p.ID = s.ID;"
+                )
+                date_min, date_max = cur.fetchone()
+            except Exception:
+                date_min, date_max = None, None
+
+            rows.append({
+                "parameter": param,
+                "n_samples": n,
+                "depth_min_m": dmin,
+                "depth_max_m": dmax,
+                "date_min": date_min,
+                "date_max": date_max,
+            })
+
+        result = pd.DataFrame(rows)
+        logging.info(result.to_string(index=False))
+        return result
+    finally:
+        if own_conn:
+            conn.close()
+
+
 def list_parameters(conn: sqlite3.Connection) -> list[str]:
     """Return the names of all P_* parameter tables (without the 'P_' prefix).
 
@@ -130,11 +188,8 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
 
-    # Fetch data
-    cur = conn.cursor()
-    ex = cur.execute(sql + ";", params)
-    cols = [desc[0] for desc in cur.description]
-    return pd.DataFrame(ex.fetchall(), columns=cols)
+    # Fetch data directly into DataFrame
+    return pd.read_sql_query(sql + ";", conn, params=params)
 
 
 def read_station(conn: sqlite3.Connection) -> pd.DataFrame:
@@ -145,13 +200,7 @@ def read_station(conn: sqlite3.Connection) -> pd.DataFrame:
     Returns:
         pandas.DataFrame
     """
-    # Connect to the db
-    cur = conn.cursor()
-
-    # Build and execute the query to obtain station metadata
-    ex = cur.execute("SELECT * FROM STATION;")
-    cols = [desc[0] for desc in cur.description]
-    return pd.DataFrame(ex.fetchall(), columns=cols)
+    return pd.read_sql_query("SELECT * FROM STATION;", conn)
 
 
 def read_extended(conn: sqlite3.Connection, param_name: str,
@@ -179,14 +228,11 @@ def read_extended(conn: sqlite3.Connection, param_name: str,
     # Build quality filter
     where = build_where_clause(quality_flags)
 
-    # Connect to db and fetch data
+    # Fetch data directly into DataFrame
     sql = f"SELECT * FROM E_{param_name.upper()} {where}"
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
-    cur = conn.cursor()
-    ex = cur.execute(sql + ";")
-    cols = [desc[0] for desc in cur.description]
-    return pd.DataFrame(ex.fetchall(), columns=cols)
+    return pd.read_sql_query(sql + ";", conn)
 
 
 def describe_variables(conn: sqlite3.Connection,
@@ -289,7 +335,7 @@ def describe_variables(conn: sqlite3.Connection,
     result = pd.DataFrame(rows)
 
     # Resolve unit IDs to names
-    id_to_unit = _load_units_map(conn)
+    id_to_unit = _load_lookup_map(conn, "UNITS", "ID", "UNIT")
     result["units"] = result["units_ids"].apply(
         lambda ids: " / ".join(
             id_to_unit.get(i, str(i)) for i in sorted(ids)
@@ -305,7 +351,7 @@ def describe_variables(conn: sqlite3.Connection,
     result = result.drop(columns="units_ids")
 
     # Resolve instrument IDs to names
-    id_to_instrument = _load_instrument_map(conn)
+    id_to_instrument = _load_lookup_map(conn, "INSTRUMENT")
     result["instruments"] = result["instrument_ids"].apply(
         lambda ids: " / ".join(
             id_to_instrument.get(i, str(i)) for i in sorted(ids)
@@ -314,7 +360,7 @@ def describe_variables(conn: sqlite3.Connection,
     result = result.drop(columns="instrument_ids")
 
     # Resolve platform IDs to names
-    id_to_platform = _load_platform_map(conn)
+    id_to_platform = _load_lookup_map(conn, "PLATFORM")
     result["platforms"] = result["platform_ids"].apply(
         lambda ids: " / ".join(
             id_to_platform.get(i, str(i)) for i in sorted(ids)
@@ -325,53 +371,18 @@ def describe_variables(conn: sqlite3.Connection,
     return result
 
 
-def _load_units_map(conn):
-    """Return a dict mapping UNITS_ID -> unit string, or {} when UNITS table is absent."""
+def _load_lookup_map(conn, table: str, id_col: str = "ID", name_col: str = "NAME") -> dict:
+    """Return a dict mapping id_col -> name_col, or {} when the table is absent."""
     from .database.information import does_table_exist
 
     try:
-        if not does_table_exist(conn, "UNITS"):
+        if not does_table_exist(conn, table):
             return {}
-
-        # Get ID and UNIT name
         cur = conn.cursor()
-        cur.execute("SELECT ID, UNIT FROM UNITS;")
+        cur.execute(f"SELECT {id_col}, {name_col} FROM {table};")
         return {row[0]: row[1] for row in cur.fetchall()}
     except Exception as exc:
-        logging.debug("_load_units_map: could not resolve UNITS table (%s)", exc)
-        return {}
-
-
-def _load_instrument_map(conn):
-    """Return a dict mapping INSTRUMENT_ID -> instrument name, or {} when INSTRUMENT table is absent."""
-    from .database.information import does_table_exist
-
-    try:
-        if not does_table_exist(conn, "INSTRUMENT"):
-            return {}
-
-        # Get ID and NAME of the instrument
-        cur = conn.cursor()
-        cur.execute("SELECT ID, NAME FROM INSTRUMENT;")
-        return {row[0]: row[1] for row in cur.fetchall()}
-    except Exception as exc:
-        logging.debug("_load_instrument_map: could not resolve INSTRUMENT table (%s)", exc)
-        return {}
-
-
-def _load_platform_map(conn):
-    """Return a dict mapping PLATFORM ID -> platform name, or {} when PLATFORM table is absent."""
-    from .database.information import does_table_exist
-
-    try:
-        if not does_table_exist(conn, "PLATFORM"):
-            return {}
-
-        cur = conn.cursor()
-        cur.execute("SELECT ID, NAME FROM PLATFORM;")
-        return {row[0]: row[1] for row in cur.fetchall()}
-    except Exception as exc:
-        logging.debug("_load_platform_map: could not resolve PLATFORM table (%s)", exc)
+        logging.debug("_load_lookup_map: could not resolve %s (%s)", table, exc)
         return {}
 
 
@@ -461,6 +472,7 @@ def load_comfort(
         as_xarray: bool = True,
         normalise_columns: bool = False,
         convert_units: bool = False,
+        limit: int | None = None,
 ) -> xr.Dataset | dict[str, pd.DataFrame]:
     """Load COMFORT data into a filtered xarray Dataset or dict of DataFrames.
 
@@ -498,6 +510,9 @@ def load_comfort(
             to its default unit using :class:`comfort.units.UnitsConverter`.
             Requires ``DATABASE_TABLES`` and ``UNITS`` tables in the database;
             silently skipped when they are absent.
+        limit (int): Maximum number of rows to load per parameter.
+            ``None`` loads all matching rows. Useful as a safeguard for
+            large tables like TEMPERATURE or SALINITY.
     Returns:
         xarray.Dataset or dict[str, pandas.DataFrame].
         For the dict path each DataFrame has the measurement column named
@@ -520,9 +535,9 @@ def load_comfort(
             parameters = list_parameters(conn)
 
         # Resolve lookup tables for xarray coordinates
-        _instrument_map = _load_instrument_map(conn)
-        _platform_map = _load_platform_map(conn)
-        _units_map = _load_units_map(conn)
+        _instrument_map = _load_lookup_map(conn, "INSTRUMENT")
+        _platform_map = _load_lookup_map(conn, "PLATFORM")
+        _units_map = _load_lookup_map(conn, "UNITS", "ID", "UNIT")
 
         # Station → platform_id mapping (when column exists)
         _station_platform: dict[int, int] = {}
@@ -552,7 +567,7 @@ def load_comfort(
         dfs = {}
         for param in parameters:
             try:
-                df = _read_with_geo(conn, param, quality_flags, **geo_kwargs)
+                df = _read_with_geo(conn, param, quality_flags, limit=limit, **geo_kwargs)
             except Exception as exc:
                 logging.warning("load_comfort: could not read %s (%s)", param, exc)
                 continue
@@ -705,7 +720,8 @@ def load_comfort(
 
 def _read_with_geo(conn, param_name, quality_flags,
                    lat_min=None, lat_max=None, lon_min=None, lon_max=None,
-                   depth_min=None, depth_max=None, date_min=None, date_max=None):
+                   depth_min=None, depth_max=None, date_min=None, date_max=None,
+                   limit=None):
     """Read a parameter table with lat/lon/time, pushing all filters to SQL.
 
     Tries the E_* extended view first; falls back to an explicit P_* JOIN station.
@@ -741,11 +757,12 @@ def _read_with_geo(conn, param_name, quality_flags,
             f"FROM P_{param_name.upper()} p JOIN station s ON p.ID = s.ID {where}"
         )
 
+    # Add optional limit to query
+    if limit is not None:
+        query += f" LIMIT {int(limit)}"
+
     # Execute query with parametrised geo/date values
-    cur = conn.cursor()
-    ex = cur.execute(query, params)
-    cols = [desc[0] for desc in cur.description]
-    return pd.DataFrame(ex.fetchall(), columns=cols)
+    return pd.read_sql_query(query, conn, params=params)
 
 
 def _append_geo_conditions(conditions, params, lat_pfx, lon_pfx, depth_pfx, date_pfx,
