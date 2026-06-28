@@ -20,7 +20,7 @@ def execute_sql_scripts(conn: sqlite3.Connection, sql_folder: str = "sql_scripts
     Args:
         conn (sqlite3.Connection): Connection to the database.
         sql_folder (str): Directory containing the SQL files. Default is 'sql_scripts/'.
-        prefix (str): Only execute files whose name starts with this string. Default is 'create_view_'.
+        prefix (str): Only execute files whose name starts with this string. Default is ``create_view_``.
     """
     # Connect to db and define prefix
     cur = conn.cursor()
