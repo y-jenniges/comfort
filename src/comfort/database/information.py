@@ -1,13 +1,19 @@
-"""Functions to query metadata from the COMFORT database."""
+"""Functions to query metadata from the COMFORT database.
+
+Adapted from Jenniges (2025), doi:10.5281/zenodo.15827777
+"""
+from __future__ import annotations
+
 import logging
-import pandas as pd
+import sqlite3
 import numpy as np
+import pandas as pd
 
 from ..qc import build_where_clause
 from ..util.sqlite_utils import validate_identifier
 
 
-def does_table_exist(conn, table_name, table_type="table"):
+def does_table_exist(conn: sqlite3.Connection, table_name: str, table_type: str = "table") -> bool:
     """Check if a table/view exists (case-sensitive).
 
     Args:
@@ -29,7 +35,8 @@ def does_table_exist(conn, table_name, table_type="table"):
     return bool(result)
 
 
-def get_min_max_dates(conn, table_name="e_combined", time_column="DATEANDTIME"):
+def get_min_max_dates(conn: sqlite3.Connection, table_name: str = "e_combined",
+                      time_column: str = "DATEANDTIME") -> tuple[pd.Timestamp, pd.Timestamp]:
     """Fetch minimum and maximum dates from a table.
 
     Args:
@@ -52,7 +59,8 @@ def get_min_max_dates(conn, table_name="e_combined", time_column="DATEANDTIME"):
     return min_date, max_date
 
 
-def get_num_samples(conn, table_name, table_type="table", quality_flags=None):
+def get_num_samples(conn: sqlite3.Connection, table_name: str, table_type: str = "table",
+                    quality_flags: list | None = None) -> int:
     """Get the number of samples in the given table.
 
     Args:
@@ -79,7 +87,8 @@ def get_num_samples(conn, table_name, table_type="table", quality_flags=None):
     return result[0]
 
 
-def get_table_as_df(conn, table_name, columns=None):
+def get_table_as_df(conn: sqlite3.Connection, table_name: str,
+                    columns: list[str] | None = None) -> pd.DataFrame:
     """Fetch a table from the database as a DataFrame.
 
     Args:
@@ -105,8 +114,9 @@ def get_table_as_df(conn, table_name, columns=None):
     return pd.DataFrame(ex.fetchall(), columns=cols)
 
 
-def get_names_of_all_parameter_tables(conn, like_pattern="P|_%", escape_char="|",
-                                      include_digits=False, table_type="table"):
+def get_names_of_all_parameter_tables(conn: sqlite3.Connection, like_pattern: str = "P|_%",
+                                      escape_char: str = "|", include_digits: bool = False,
+                                      table_type: str = "table") -> list[str]:
     """Get all table/view names matching the given LIKE pattern.
 
     Args:
@@ -140,7 +150,8 @@ def get_names_of_all_parameter_tables(conn, like_pattern="P|_%", escape_char="|"
     return [entry[0] for entry in result]
 
 
-def get_minmax(conn, column="LATITUDE", column_type="float", param_tables=None):
+def get_minmax(conn: sqlite3.Connection, column: str = "LATITUDE", column_type: str = "float",
+               param_tables: list[str] | None = None) -> tuple:
     """Get the global min and max of a column across all parameter tables.
 
     Args:
