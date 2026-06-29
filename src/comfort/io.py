@@ -36,12 +36,8 @@ def connect(db_path: str | Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-# World Ocean Database (WOD) standard depth levels in metres
-WOD_STANDARD_DEPTHS = np.array([
-    0, 10, 20, 30, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500,
-    600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500,
-    1750, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500,
-], dtype=float)
+# Depth levels (similar to Jenniges et al. 2026 (https://doi.org/10.1016/j.ecoinf.2025.103390)
+DEPTH_INTERVALS = np.array([0, 50, 100, 200, 300, 400, 500, 1000, 1500, 2000, 3000, 4000, 5000, 6000])
 
 
 def info(db_path_or_conn: str | Path | sqlite3.Connection) -> pd.DataFrame:
@@ -172,7 +168,7 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
         sql = (
             f"SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME "
             f"FROM P_{param_name.upper()} p "
-            f"JOIN station s ON p.ID = s.ID {where}"
+            f"LEFT JOIN station s ON p.ID = s.ID {where}"
         )
     else:
         # Build query with quality and profile filters
@@ -616,7 +612,7 @@ def load_comfort(
 
     # Target depth levels for interpolation
     depths = np.asarray(
-        target_depths if target_depths is not None else WOD_STANDARD_DEPTHS,
+        target_depths if target_depths is not None else DEPTH_INTERVALS,
         dtype=float,
     )
 
