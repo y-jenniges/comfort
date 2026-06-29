@@ -250,7 +250,7 @@ class ConversionFormulas:
         logging.debug("percent -> micromolPerKilogram (oxygen saturation formula)")
         temp = df.copy()
         o2_sat = oxygen_saturation(df["salinity"], df["temperature"])
-        return temp.assign(VAL=temp["VAL"] * o2_sat * 100, UNITS_ID=3)
+        return temp.assign(VAL=temp["VAL"] * o2_sat / 100 , UNITS_ID=3)
 
     def compute_lab_density(self, df: pd.DataFrame, param_name: str,
                             use_density: bool) -> float | pd.Series:
@@ -276,26 +276,42 @@ def oxygen_saturation(salinity, temperature) -> np.ndarray | None:
     Valid for 0 < T < 40 degC, 0 < S < 40.
 
     Args:
-        salinity: Salinity [psu].
-        temperature: Temperature [degC].
+        salinity (double): Salinity [psu]
+        temperature (double): Temperature [°C]
+
+    Returns:
+        oxygen_sat (double): Oxygen saturation
     """
-    if salinity is None or temperature is None:
-        return None
+    oxygen_sat = None
+    if salinity is not None and temperature is not None:
+        salinity = np.array(salinity)
+        temperature = np.array(temperature)
 
-    # Ensure correct type for salinity and temperature
-    salinity = np.array(salinity, dtype=float)
-    temperature = np.array(temperature, dtype=float)
+        if isinstance(temperature, (int, float)):
+            if temperature < 0 or temperature > 40:
+                logging.warning("    units.oxygen_saturation: Temperature is out of valid range for this function "
+                                "(0 < T < 40°C).")
+        elif isinstance(temperature, (list, np.ndarray, pd.Series)):
+            if (np.array(temperature) < 0).any() or (np.array(temperature) > 40).any():
+                logging.warning("     units.oxygen_saturation: Temperature is out of valid range for this function "
+                                "(0 < T < 40°C).")
+        if isinstance(salinity, (int, float)):
+            if salinity < 0 or salinity > 40:
+                logging.warning("    units.oxygen_saturation: Salinity is out of valid range for this function "
+                                "(0 < S < 40).")
+            elif isinstance(salinity, (list, np.ndarray, pd.Series)):
+                if (np.array(salinity) < 0).any() or (np.array(salinity) > 40).any():
+                    logging.warning("    units.oxygen_saturation: Salinity is out of valid range for this function "
+                                    "(0 < S < 40).")
 
-    # Warn if out-of-range for the formula
-    if np.any((temperature < 0) | (temperature > 40)):
-        logging.warning("oxygen_saturation: temperature out of valid range (0-40 degC)")
-    if np.any((salinity < 0) | (salinity > 40)):
-        logging.warning("oxygen_saturation: salinity out of valid range (0-40)")
+        temperature_kelvin = temperature + 273.15
+        oxygen_sat = np.exp(-135.29996 + 1.572288 * 10 ** 5 / temperature_kelvin
+                            - 6.637149 * 10 ** 7 / temperature_kelvin ** 2
+                            + 1.243678 * 10 ** 10 / temperature_kelvin ** 3
+                            - 8.621061 * 10 ** 11 / temperature_kelvin ** 4
+                            - salinity * (0.020573 - 12.142 / temperature_kelvin + 2363.1 / temperature_kelvin ** 2))
+    else:
+        logging.warning("    units.oxygen_saturation: Cannot compute oxygen saturation since temperature and/or "
+                        "salinity value not given.")
 
-    # Benson & Krause (1984), eq. 31
-    tk = temperature + 273.15
-    return np.exp(
-        -135.29996 + 1.572288e5 / tk - 6.637149e7 / tk ** 2
-        + 1.243678e10 / tk ** 3 - 8.621061e11 / tk ** 4
-        - salinity * (0.020573 - 12.142 / tk + 2363.1 / tk ** 2)
-    )
+    return oxygen_sat
