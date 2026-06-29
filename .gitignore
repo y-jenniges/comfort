@@ -43,3 +43,4 @@ docs/_build/
 *.bak
 *.md.backup
 *.log
+*.sh
