@@ -14,7 +14,7 @@ import pandas as pd
 if TYPE_CHECKING:
     import xarray as xr
 
-from .analysis import interpolate_depth_levels
+from .profile_analysis import interpolate_depth_levels
 from .database.information import get_names_of_all_parameter_tables
 from .qc import QCFilter, build_where_clause
 from .util.sqlite_utils import validate_identifier
@@ -166,7 +166,8 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = (
-            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME "
+            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
+            f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
             f"FROM P_{param_name.upper()} p "
             f"LEFT JOIN station s ON p.ID = s.ID {where}"
         )
@@ -196,7 +197,10 @@ def read_station(conn: sqlite3.Connection) -> pd.DataFrame:
     Returns:
         pandas.DataFrame
     """
-    return pd.read_sql_query("SELECT * FROM STATION;", conn)
+    df = pd.read_sql_query("SELECT * FROM STATION;", conn)
+    if "DATEANDTIME" in df.columns:
+        df["DATEANDTIME"] = df["DATEANDTIME"].str.slice(0, 19)
+    return df
 
 
 def read_extended(conn: sqlite3.Connection, param_name: str,
@@ -287,12 +291,19 @@ def describe_variables(conn: sqlite3.Connection,
         # Connect to db and fetch parameter statistics
         cur = conn.cursor()
         cur.execute(
-            f"SELECT COUNT(*), COUNT(DISTINCT ID), COUNT(DISTINCT PROFILE_NUMBER), "
+            f"SELECT COUNT(*), COUNT(DISTINCT ID), "
             f"COUNT(DISTINCT INSTRUMENT_ID), "
             f"MIN(LEV_M), MAX(LEV_M), MIN(VAL), MAX(VAL) "
             f"FROM {table} {where};"
         )
-        n, n_sta, n_prof, n_inst, dmin, dmax, vmin, vmax = cur.fetchone()
+        n, n_sta, n_inst, dmin, dmax, vmin, vmax = cur.fetchone()
+
+        # Count distinct (ID, PROFILE_NUMBER) pairs — PROFILE_NUMBER is only unique within a station
+        cur.execute(
+            f"SELECT COUNT(*) FROM "
+            f"(SELECT DISTINCT ID, PROFILE_NUMBER FROM {table} {where});"
+        )
+        n_prof = cur.fetchone()[0]
 
         # Get IDs of units and instruments
         cur.execute(f"SELECT DISTINCT UNITS_ID FROM {table} {where};")
@@ -616,25 +627,33 @@ def load_comfort(
         dtype=float,
     )
 
-    # Collect unique profile numbers across all parameters
+    # Collect unique (station_id, profile_number) pairs as canonical profile identities
     all_profiles = sorted(
-        set().union(*[df["PROFILE_NUMBER"].unique() for df in dfs.values()])
+        set().union(*[
+            set(zip(df["ID"], df["PROFILE_NUMBER"]))
+            if "ID" in df.columns and "PROFILE_NUMBER" in df.columns
+            else {(None, pn) for pn in df["PROFILE_NUMBER"].unique()}
+            for df in dfs.values()
+        ])
     )
     n_profiles = len(all_profiles)
     n_depths = len(depths)
 
-    # Extract station metadata from first row of each profile
-    meta = {}
+    # Extract station metadata from first row of each (ID, PROFILE_NUMBER) pair
+    meta: dict = {}
     for df in dfs.values():
-        for pid, group in df.groupby("PROFILE_NUMBER"):
-            if pid not in meta:
+        group_keys = ["ID", "PROFILE_NUMBER"] if "ID" in df.columns else ["PROFILE_NUMBER"]
+        for pid, group in df.groupby(group_keys):
+            key = pid if isinstance(pid, tuple) else (None, pid)
+            if key not in meta:
                 row = group.iloc[0]
-                sid = int(row["ID"]) if "ID" in row.index else -1
-                meta[pid] = {
+                sid = int(row["ID"]) if "ID" in row.index and row["ID"] is not None else -1
+                meta[key] = {
                     "latitude": row.get("LATITUDE", np.nan),
                     "longitude": row.get("LONGITUDE", np.nan),
                     "time": row.get("DATEANDTIME", None),
                     "station_id": sid,
+                    "profile_number": int(row["PROFILE_NUMBER"]) if "PROFILE_NUMBER" in row.index else -1,
                     "instrument_id": int(row["INSTRUMENT_ID"]) if "INSTRUMENT_ID" in row.index else -1,
                     "platform_id": _station_platform.get(sid, -1),
                 }
@@ -642,16 +661,21 @@ def load_comfort(
     # Interpolate each parameter onto target depth levels
     data_vars = {}
     for param, df in dfs.items():
-        interp = interpolate_depth_levels(
-            df, depths, param_col=param,
-            depth_col="LEV_M", profile_col="PROFILE_NUMBER",
-        )
+        interp = interpolate_depth_levels(df, depths, param_col=param, depth_col="LEV_M")
         if interp.empty:
             arr = np.full((n_profiles, n_depths), np.nan)
         else:
-            # Pivot to (profile x depth) matrix
+            # Build composite key column for pivot; auto-detected profile key matches all_profiles tuples
+            if "ID" in interp.columns and "PROFILE_NUMBER" in interp.columns:
+                interp = interp.assign(
+                    _profile_key=list(zip(interp["ID"], interp["PROFILE_NUMBER"]))
+                )
+            else:
+                interp = interp.assign(
+                    _profile_key=[(None, pn) for pn in interp["PROFILE_NUMBER"]]
+                )
             pivot = interp.pivot_table(
-                index="PROFILE_NUMBER", columns="LEV_M",
+                index="_profile_key", columns="LEV_M",
                 values=param, aggfunc="first",
             )
             pivot = pivot.reindex(index=all_profiles, columns=depths, fill_value=np.nan)
@@ -662,6 +686,7 @@ def load_comfort(
     lats = np.array([meta.get(p, {}).get("latitude", np.nan) for p in all_profiles])
     lons = np.array([meta.get(p, {}).get("longitude", np.nan) for p in all_profiles])
     station_ids = np.array([meta.get(p, {}).get("station_id", -1) for p in all_profiles])
+    profile_numbers = np.array([meta.get(p, {}).get("profile_number", -1) for p in all_profiles])
     instrument_ids = np.array([meta.get(p, {}).get("instrument_id", -1) for p in all_profiles])
     platform_ids = np.array([meta.get(p, {}).get("platform_id", -1) for p in all_profiles])
     raw_times = [meta.get(p, {}).get("time") for p in all_profiles]
@@ -685,7 +710,7 @@ def load_comfort(
         data_vars,
         coords={
             "depth": depths,
-            "profile_id": ("profile", np.array(all_profiles)),
+            "profile_number": ("profile", profile_numbers),
             "station_id": ("profile", station_ids),
             "instrument": ("profile", instruments),
             "platform": ("profile", platforms),
