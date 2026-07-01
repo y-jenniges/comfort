@@ -549,7 +549,8 @@ class Grid(_BaseGrid):
 
             # Build SQL query to retrieve table data
             z_eq = "<=" if include_z_max else "<"
-            q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, DATEANDTIME, VAL "
+            q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, VAL, "
+                 f"strftime('%Y-%m-%d %H:%M:%S', DATEANDTIME) AS DATEANDTIME "
                  f"FROM {table} WHERE "
                  f"LATITUDE >= ? AND LATITUDE <= ? AND "
                  f"LONGITUDE >= ? AND LONGITUDE <= ? AND "
@@ -572,7 +573,7 @@ class Grid(_BaseGrid):
                 time_bins = pd.DatetimeIndex(self.time_array)
                 time_bins = time_bins.union([pd.Timestamp(self.time_max) + pd.Timedelta(nanoseconds=1)])
                 df["DATEANDTIME"] = pd.cut(
-                    pd.to_datetime(df["DATEANDTIME"], format="%Y-%m-%d %H:%M:%S"),
+                    pd.to_datetime(df["DATEANDTIME"]),
                     bins=time_bins, labels=time_bins[:-1], right=False,
                 )
                 df["DATEANDTIME"] = (df["DATEANDTIME"].astype("datetime64[ns]")
@@ -733,7 +734,8 @@ class SpaceGrid(_BaseGrid):
 
             # Build SQL query to retrieve table data
             z_eq = "<=" if include_z_max else "<"
-            q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, DATEANDTIME, VAL "
+            q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, VAL, "
+                 f"strftime('%Y-%m-%d %H:%M:%S', DATEANDTIME) AS DATEANDTIME "
                  f"FROM {table} WHERE "
                  f"LATITUDE >= ? AND LATITUDE <= ? AND "
                  f"LONGITUDE >= ? AND LONGITUDE <= ? AND "
@@ -783,15 +785,26 @@ def drop_land_cells(df_wide: pd.DataFrame) -> pd.DataFrame:
     # Drop points that are land and have no parameter value assigned to it
     # make sure that for each depth level, the grid looks the same for all times
     depths = temp["LEV_M"].value_counts().index.tolist()
-    times = temp["DATEANDTIME"].value_counts().index.tolist()
+
+    if "DATEANDTIME" in temp.columns:
+        times = temp["DATEANDTIME"].value_counts().index.tolist()
+
     for d in depths:
         condition = True
         indexes = pd.DataFrame()
         for param in param_tables:
-            for t in times:
-                ddtt = temp[(temp["LEV_M"] == d) & (temp["DATEANDTIME"] == t)].reset_index()
-                condition = condition & ~ddtt["water"] & ddtt[param].isna()
-                indexes = pd.concat([indexes, pd.DataFrame({f"{param}_{t}": ddtt["index"]})], axis=1)
+            # Time-resolved grid
+            if "DATEANDTIME" in temp.columns:
+                for t in times:
+                    ddtt = temp[(temp["LEV_M"] == d) & (temp["DATEANDTIME"] == t)].reset_index()
+                    condition = condition & ~ddtt["water"] & ddtt[param].isna()
+                    indexes = pd.concat([indexes, pd.DataFrame({f"{param}_{t}": ddtt["index"]})], axis=1)
+            else:
+                # Time-averaged grid
+                dd = temp[temp["LEV_M"] == d].reset_index()
+                condition = condition & ~dd["water"] & dd[param].isna()
+                indexes = pd.concat([indexes, pd.DataFrame({f"{param}": dd["index"]})], axis=1)
+
         indexes = indexes[condition]  # get indexes that can be dropped
         indexes = pd.concat(indexes[col] for col in indexes)  # flatten to get one list of indexes to drop
         temp = temp.drop(indexes)
