@@ -84,5 +84,5 @@ if BATHYMETRY_PATH:
     print(f"Time steps: {len(grid.time_array)}")
 else:
     print(
-        "Skipping gridding example — set COMFORT_BATHYMETRY_PATH in .env to enable."
+        "Skipping gridding example - set COMFORT_BATHYMETRY_PATH in .env to enable."
     )
