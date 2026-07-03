@@ -298,7 +298,7 @@ def describe_variables(conn: sqlite3.Connection,
         )
         n, n_sta, n_inst, dmin, dmax, vmin, vmax = cur.fetchone()
 
-        # Count distinct (ID, PROFILE_NUMBER) pairs — PROFILE_NUMBER is only unique within a station
+        # Count distinct (ID, PROFILE_NUMBER) pairs - PROFILE_NUMBER is only unique within a station
         cur.execute(
             f"SELECT COUNT(*) FROM "
             f"(SELECT DISTINCT ID, PROFILE_NUMBER FROM {table} {where});"

@@ -344,7 +344,7 @@ class GridManager:
             params.extend(["None", "None", "None",
                            json.dumps(np.array(z_array).tolist())])
 
-        # Add  time selection
+        # Add time selection
         sel_val = ("None" if selection is None
                    else json.dumps(np.array(selection).tolist()))
         params.extend([str(time_min), str(time_max), str(mode), dtime, sel_val])
