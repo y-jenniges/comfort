@@ -101,7 +101,7 @@ def create_extended_parameter_tables(conn: sqlite3.Connection, table_type: str =
             logging.error(f"create_extended_parameter_tables: {table_name} does not exist")
             return
 
-        # Assemble and execute  SQL query
+        # Assemble and execute SQL query
         query = (f"CREATE {table_type} IF NOT EXISTS {new_name} AS "
                  f"SELECT t.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME {ts_select} "
                  f"FROM {table_name} AS t "
