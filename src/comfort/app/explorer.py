@@ -6,7 +6,7 @@ Three modes:
     - **CSV**: inspect an existing gridded table form a CSV.
 
 Set environment variables before launching:
-    COMFORT_DB_PATH — path to the COMFORT SQLite database
+    COMFORT_DB_PATH - path to the COMFORT SQLite database
 
 Usage:
     python -m comfort.app.explorer
@@ -130,7 +130,7 @@ def _build_layout() -> dbc.Container:
 
         dbc.Row([
 
-            # Left panel — controls
+            # Left panel - controls
             dbc.Col([
                 dbc.Tabs(id="tabs", active_tab="scatter", children=[
                     _scatter_tab(),
@@ -139,7 +139,7 @@ def _build_layout() -> dbc.Container:
                 ]),
             ], md=5, lg=4),
 
-            # Right panel — chart and status
+            # Right panel - chart and status
             dbc.Col([
                 dbc.Alert(
                     id="alert", is_open=False,
@@ -530,7 +530,7 @@ def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
 
         # Render with full data
         unit_note = _scatter_cache["unit_note"]
-        status = f"{len(df):,} rows loaded  —  {param}{unit_note}"
+        status = f"{len(df):,} rows loaded  -  {param}{unit_note}"
         fig = _scatter_figure(df, param, plot_type, _scatter_cache["bounds"])
         return (fig, status,
                 z_min, z_max, [z_min, z_max],
@@ -571,7 +571,7 @@ def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
         return fig, "0 rows after filtering", *no_slider, "", False
 
     unit_note = _scatter_cache.get("unit_note", "")
-    status = f"{len(filtered):,} rows  —  {param}{unit_note}"
+    status = f"{len(filtered):,} rows  -  {param}{unit_note}"
     fig = _scatter_figure(filtered, param, plot_type, bounds)
     return fig, status, *no_slider, "", False
 
@@ -591,7 +591,7 @@ def _scatter_figure(df, param, plot_type, bounds):
             df, lat="LATITUDE", lon="LONGITUDE", color="VAL",
             color_continuous_scale="Viridis",
             labels={"VAL": param},
-            title=f"{param} — spatial distribution",
+            title=f"{param} - spatial distribution",
         )
         fig.update_geos(
             **_GEO_STYLE,
@@ -602,7 +602,7 @@ def _scatter_figure(df, param, plot_type, bounds):
         fig = px.scatter(
             df, x="VAL", y="LEV_M",
             labels={"VAL": param, "LEV_M": "Depth (m)"},
-            title=f"{param} — depth profile",
+            title=f"{param} - depth profile",
             opacity=0.3,
         )
         fig.update_yaxes(autorange="reversed")
@@ -614,14 +614,14 @@ def _scatter_figure(df, param, plot_type, bounds):
         fig = px.scatter(
             temp, x="DATEANDTIME", y="VAL",
             labels={"VAL": param, "DATEANDTIME": "Date"},
-            title=f"{param} — time series",
+            title=f"{param} - time series",
             opacity=0.3,
         )
     else:
         fig = px.histogram(
             df, x="VAL", nbins=80,
             labels={"VAL": param},
-            title=f"{param} — value distribution",
+            title=f"{param} - value distribution",
         )
 
     fig.update_layout(template="plotly_white")
@@ -670,8 +670,8 @@ def _populate_grid_controls(table_name):
     if not table_name:
         return (
             [], None,
-            0, 1, 0, {0: "—"}, None, True,
-            0, 1, 0, {0: "—"}, None, True,
+            0, 1, 0, {0: "-"}, None, True,
+            0, 1, 0, {0: "-"}, None, True,
         )
 
     conn = _get_conn()
@@ -717,7 +717,7 @@ def _populate_grid_controls(table_name):
         d_min = d_max = d_val = float(depths[0])
         d_step, d_disabled = None, True
     else:
-        d_marks, d_min, d_max, d_val = {0: "—"}, 0, 1, 0
+        d_marks, d_min, d_max, d_val = {0: "-"}, 0, 1, 0
         d_step, d_disabled = None, True
 
     # Time slider: index-based, snap to marks only (step=None avoids the editable input)
@@ -733,7 +733,7 @@ def _populate_grid_controls(table_name):
         t_min = t_max = t_val = 0
         t_step, t_disabled = None, True
     else:
-        t_marks, t_min, t_max, t_val = {0: "—"}, 0, 1, 0
+        t_marks, t_min, t_max, t_val = {0: "-"}, 0, 1, 0
         t_step, t_disabled = None, True
 
     return (
@@ -796,7 +796,7 @@ def _render_grid(param_col, depth_val, time_idx, plot_type, table_name):
     n_valid = df[param_col].notna().sum()
     depth_label = f"{depth_val:.0f} m" if depth_val is not None else "all"
     time_label = str(time_val)[:10] if time_val else "all"
-    status = (f"{n_valid:,} / {n_total:,} cells  —  "
+    status = (f"{n_valid:,} / {n_total:,} cells - "
               f"{param_col}  |  depth: {depth_label}  |  time: {time_label}")
 
     fig = _grid_figure(df, param_col, depth_label, plot_type)
@@ -835,7 +835,7 @@ def _grid_figure(df, param_col, depth_label, plot_type, show_global=False):
         fig = px.scatter_geo(
             plot_df, lat="LATITUDE", lon="LONGITUDE", color=param_col,
             color_continuous_scale="Viridis",
-            title=f"{param_col} — {depth_label}",
+            title=f"{param_col} - {depth_label}",
         )
         # Crop map to grid extent
         lat_min, lat_max = df["LATITUDE"].min(), df["LATITUDE"].max()
@@ -869,7 +869,7 @@ def _grid_figure(df, param_col, depth_label, plot_type, show_global=False):
             missing, x="parameter", y="missing_pct",
             labels={"missing_pct": "Missing (%)", "parameter": ""},
             color="missing_pct", color_continuous_scale="RdYlGn_r",
-            title=f"Missing values — {depth_label}",
+            title=f"Missing values - {depth_label}",
             text=missing["missing_pct"].round(1).astype(str) + "%",
         )
         fig.update_traces(textposition="outside")
@@ -879,7 +879,7 @@ def _grid_figure(df, param_col, depth_label, plot_type, show_global=False):
         valid = df[param_col].dropna()
         fig = px.histogram(
             valid, x=param_col, nbins=80,
-            title=f"{param_col} — {depth_label}",
+            title=f"{param_col} - {depth_label}",
         )
 
     fig.update_layout(template="plotly_white")
@@ -951,7 +951,7 @@ def _load_csv(contents, filename):
         d_min = d_max = d_val = float(depths[0])
         d_step, d_disabled = None, True
     else:
-        d_marks, d_min, d_max, d_val = {0: "—"}, 0, 1, 0
+        d_marks, d_min, d_max, d_val = {0: "-"}, 0, 1, 0
         d_step, d_disabled = None, True
 
     # Time slider: index-based, snap to marks only (step=None avoids the editable input)
@@ -967,7 +967,7 @@ def _load_csv(contents, filename):
         t_min = t_max = t_val = 0
         t_step, t_disabled = None, True
     else:
-        t_marks, t_min, t_max, t_val = {0: "—"}, 0, 1, 0
+        t_marks, t_min, t_max, t_val = {0: "-"}, 0, 1, 0
         t_step, t_disabled = None, True
 
     return (
@@ -1013,8 +1013,8 @@ def _render_csv(param_col, depth_val, time_idx, plot_type, show_global):
     n_valid = df[param_col].notna().sum()
     depth_label = f"{depth_val:.0f} m" if depth_val is not None else "all"
     time_label = str(time_val)[:10] if time_val else "all"
-    status = (f"{n_valid:,} / {n_total:,} cells  —  "
-              f"{param_col}  |  depth: {depth_label}  |  time: {time_label}")
+    status = (f"{n_valid:,} / {n_total:,} cells - "
+              f"{param_col} | depth: {depth_label} | time: {time_label}")
 
     fig = _grid_figure(df, param_col, depth_label, plot_type, show_global)
     return fig, status, "", False
