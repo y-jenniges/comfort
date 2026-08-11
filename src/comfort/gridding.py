@@ -767,10 +767,12 @@ class SpaceGrid(_BaseGrid):
 
 
 def drop_land_cells(df_wide: pd.DataFrame) -> pd.DataFrame:
-    """Remove rows that are on land (water=False) and have no parameter value.
+    """Remove grid cells that are on land (water=False) and never have a parameter value.
 
-    A row is dropped only if it is on land AND all P_* columns are NaN.
-    Rows with data on land (e.g. coastal grid cells) are kept.
+    A (LATITUDE, LONGITUDE, LEV_M) cell is dropped only if it is on land AND all
+    P_* columns are NaN for every time step. This keeps the grid identical across
+    time steps at a given depth: a cell that has data in at least one time step
+    is kept in all time steps.
 
     Args:
         df_wide (pandas.DataFrame): Wide grid table with a 'water' column.
@@ -781,34 +783,16 @@ def drop_land_cells(df_wide: pd.DataFrame) -> pd.DataFrame:
 
     # Get parameter columns
     param_tables = [x for x in temp.columns if x.startswith("P_")]
+    if not param_tables:
+        return temp
 
-    # Drop points that are land and have no parameter value assigned to it
-    # make sure that for each depth level, the grid looks the same for all times
-    depths = temp["LEV_M"].value_counts().index.tolist()
+    # A cell ever has data if any parameter is non-NaN in any time step
+    has_data = temp[param_tables].notna().any(axis=1)
+    group_cols = ["LATITUDE", "LONGITUDE", "LEV_M"]
+    ever_has_data = has_data.groupby([temp[c] for c in group_cols]).transform("any")
 
-    if "DATEANDTIME" in temp.columns:
-        times = temp["DATEANDTIME"].value_counts().index.tolist()
-
-    for d in depths:
-        condition = True
-        indexes = pd.DataFrame()
-        for param in param_tables:
-            # Time-resolved grid
-            if "DATEANDTIME" in temp.columns:
-                for t in times:
-                    ddtt = temp[(temp["LEV_M"] == d) & (temp["DATEANDTIME"] == t)].reset_index()
-                    condition = condition & ~ddtt["water"] & ddtt[param].isna()
-                    indexes = pd.concat([indexes, pd.DataFrame({f"{param}_{t}": ddtt["index"]})], axis=1)
-            else:
-                # Time-averaged grid
-                dd = temp[temp["LEV_M"] == d].reset_index()
-                condition = condition & ~dd["water"] & dd[param].isna()
-                indexes = pd.concat([indexes, pd.DataFrame({f"{param}": dd["index"]})], axis=1)
-
-        indexes = indexes[condition]  # get indexes that can be dropped
-        indexes = pd.concat(indexes[col] for col in indexes)  # flatten to get one list of indexes to drop
-        temp = temp.drop(indexes)
-    return temp
+    # Drop cells that are on land and never have data, at any depth or time
+    return temp[temp["water"] | ever_has_data]
 
 
 def create_wide_table_offline(mapped_tables: list[pd.DataFrame],
