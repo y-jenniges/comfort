@@ -510,6 +510,29 @@ class Grid(_BaseGrid):
         return df.astype({"DATEANDTIME": str, "LEV_M": float,
                           "LATITUDE": float, "LONGITUDE": float, "water": bool})
 
+    def _map_time(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Bin the DATEANDTIME column, according to self.mode."""
+        if self.mode in ("Y", "YM", "YD"):
+            time_bins = pd.DatetimeIndex(self.time_array)
+            time_bins = time_bins.union([pd.Timestamp(self.time_max) + pd.Timedelta(nanoseconds=1)])
+            df["DATEANDTIME"] = pd.cut(
+                pd.to_datetime(df["DATEANDTIME"]),
+                bins=time_bins, labels=time_bins[:-1], right=False,
+            )
+            df["DATEANDTIME"] = (df["DATEANDTIME"].astype("datetime64[ns]")
+                                 .dt.strftime("%Y-%m-%d %H:%M:%S"))
+        elif self.mode == "M":
+            # Get month from date column
+            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%m")
+        elif self.mode == "MD":
+            # Get month-day from date column
+            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%m-%d %H:%M:%S")
+        elif self.mode == "D":
+            # Get day from date column
+            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%d")
+
+        return df
+
     def map_tables(self, connection: sqlite3.Connection, param_tables: list[str] | None = None,
                    replace_existing: bool = False, include_z_max: bool = True) -> list[str]:
         """Bin each parameter table into this grid and write the result to the database.
@@ -569,24 +592,7 @@ class Grid(_BaseGrid):
             df = self._map_lat_lon_depth(df)
 
             # Map DATEANDTIME column according to the time mode
-            if self.mode in ("Y", "YM", "YD"):
-                time_bins = pd.DatetimeIndex(self.time_array)
-                time_bins = time_bins.union([pd.Timestamp(self.time_max) + pd.Timedelta(nanoseconds=1)])
-                df["DATEANDTIME"] = pd.cut(
-                    pd.to_datetime(df["DATEANDTIME"]),
-                    bins=time_bins, labels=time_bins[:-1], right=False,
-                )
-                df["DATEANDTIME"] = (df["DATEANDTIME"].astype("datetime64[ns]")
-                                     .dt.strftime("%Y-%m-%d %H:%M:%S"))
-            elif self.mode == "M":
-                # Get month from date column
-                df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%m")
-            elif self.mode == "MD":
-                # Get month-day from date column
-                df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%m-%d %H:%M:%S")
-            elif self.mode == "D":
-                # Get day from date column
-                df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%d")
+            df = self._map_time(df)
 
             # Aggregate cells with same latitude, longitude, depth and time (mean, median, std, count)
             df_grouped = (
