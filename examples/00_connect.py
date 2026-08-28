@@ -21,7 +21,7 @@ from comfort.qc import QC_GOOD
 load_dotenv()
 
 DB_PATH = os.environ.get("COMFORT_DB_PATH", "")
-BATHYMETRY_PATH = os.environ.get("COMFORT_BATHYMETRY_PATH", "")
+BATHYMETRY_PATH = os.environ.get("BATHYMETRY_PATH", "")
 
 if not DB_PATH:
     sys.exit(
