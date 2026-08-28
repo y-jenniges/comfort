@@ -507,7 +507,7 @@ def load_comfort(
         date_min (str or datetime-like): Start date (inclusive).
         date_max (str or datetime-like): End date (inclusive).
         target_depths (array-like): Depth levels [m] for interpolation.
-            Defaults to :data:`WOD_STANDARD_DEPTHS`.
+            Defaults to :data:`DEPTH_INTERVALS`.
         as_xarray (bool): ``True`` returns ``xr.Dataset``, ``False`` returns
             ``dict[param_name, pandas.DataFrame]``.
         normalise_columns (bool): When ``True`` and ``as_xarray=False``,
