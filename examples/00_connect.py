@@ -5,12 +5,11 @@ COMFORT SQLite file and (optionally) a GEBCO bathymetry NetCDF for gridding.
 
 Setup (once):
     1. Copy ``.env.example`` to ``.env`` in the project root.
-    2. Fill in the two paths for your machine.
+    2. Fill in the paths for your machine.
     3. Run this script::
         python examples/00_connect.py
 """
 from __future__ import annotations
-
 import os
 import sys
 from dotenv import load_dotenv
@@ -23,24 +22,28 @@ load_dotenv()
 DB_PATH = os.environ.get("COMFORT_DB_PATH", "")
 BATHYMETRY_PATH = os.environ.get("BATHYMETRY_PATH", "")
 
+# Check if path to COMFORT DB is set
 if not DB_PATH:
     sys.exit(
         "COMFORT_DB_PATH is not set.\n"
         "Copy .env.example to .env and fill in the path to your COMFORT SQLite file."
     )
 
-# 1. Context-managed connection
+# --- 1. Context-managed connection ---------------------------------------------- #
 with comfort.connect(DB_PATH) as conn:
+    # List parameters in the database
     params = comfort.list_parameters(conn)
     print(f"Available parameters: {params}\n")
 
+    # Get basic info about given parameters
     summary = comfort.describe_variables(
         conn, parameters=["NITRATE", "OXYGEN", "TEMPERATURE"], quality_flags=QC_GOOD,
     )
     print("--- Variable summary (QC_GOOD) ---")
     print(summary.to_string(index=False), "\n")
 
-# 2. load_comfort with a file path (manages connection automatically)
+# --- 2. load_comfort with a file path (manages connection automatically)  --------- #
+# Load parameters of interest (filtered for quality, spatial and temporal extent)
 dfs = comfort.load_comfort(
     DB_PATH,
     parameters=["NITRATE", "OXYGEN"],
@@ -55,7 +58,8 @@ for name, df in dfs.items():
         f"n instruments {df['INSTRUMENT_ID'].nunique()}")
 print()
 
-# 3. xarray output with depth interpolation
+# --- 3. xarray output with depth interpolation ------------------------------------ #
+# Load nitrate data as xarray, mapped given depth levels
 ds = comfort.load_comfort(
     DB_PATH,
     parameters=["NITRATE"],
@@ -66,10 +70,11 @@ ds = comfort.load_comfort(
 print("--- xarray Dataset ---")
 print(ds, "\n")
 
-# 4. Gridding with bathymetry (optional)
+# --- 4. Gridding with bathymetry (optional) ---------------------------------------- #
 if BATHYMETRY_PATH:
     from comfort import Grid
 
+    # Create grid with 5-year time steps
     grid = Grid(
         lat_min=30, lat_max=70, dlat=5,
         lon_min=-80, lon_max=0, dlon=5,
