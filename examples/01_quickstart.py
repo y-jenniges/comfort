@@ -1,17 +1,13 @@
 """Quick-start: load, explore and filter COMFORT data.
 
-Demonstrates the core I/O functions: ``info``, ``describe_variables``,
-``load_comfort``, ``read_parameter`` and ``subset_region``.
-
 Requires:
-    COMFORT_DB_PATH -- path to the COMFORT SQLite database
+    COMFORT_DB_PATH - path to the COMFORT SQLite database
     (set this in .env file)
 """
 from __future__ import annotations
 
 import os
 import sys
-
 from dotenv import load_dotenv
 
 import comfort
@@ -34,14 +30,17 @@ if __name__ == "__main__":
         print("=== describe_variables ===")
         summary = comfort.describe_variables(conn,
                                              parameters=["NITRATE", "OXYGEN"],
-                                             quality_flags=comfort.QC_GOOD)
+                                             quality_flags=comfort.QC_GOOD
+                                             )
         print(summary.to_string(index=False), "\n")
 
         # Load as dict of DataFrames
         print("=== load_comfort (dict output) ===")
         dfs = comfort.load_comfort(
-            conn, parameters=["NITRATE", "OXYGEN"],
-            quality_flags=comfort.QC_GOOD, as_xarray=False,
+            conn,
+            parameters=["NITRATE", "OXYGEN"],
+            quality_flags=comfort.QC_GOOD,
+            as_xarray=False,
         )
         for name, df in dfs.items():
             print(f"  {name}: {len(df)} rows, columns {list(df.columns)}")
@@ -50,17 +49,21 @@ if __name__ == "__main__":
         # Load as xarray Dataset
         print("=== load_comfort (xarray output) ===")
         ds = comfort.load_comfort(
-            conn, parameters=["NITRATE", "OXYGEN"],
-            quality_flags=comfort.QC_GOOD, as_xarray=True,
+            conn,
+            parameters=["NITRATE", "OXYGEN"],
+            quality_flags=comfort.QC_GOOD,
+            as_xarray=True,
         )
         print(ds, "\n")
 
         # Spatial and temporal filtering in SQL
         print("=== load_comfort with spatial filter ===")
         dfs_filtered = comfort.load_comfort(
-            conn, parameters=["NITRATE"],
+            conn,
+            parameters=["NITRATE"],
             quality_flags=comfort.QC_GOOD,
-            lat_min=40, lat_max=65, lon_min=-30, lon_max=0,
+            lat_min=40, lat_max=65,
+            lon_min=-30, lon_max=0,
             as_xarray=False,
         )
         df_nit = dfs_filtered.get("NITRATE")
@@ -75,6 +78,9 @@ if __name__ == "__main__":
 
         # Lower-level read: single parameter table
         print("\n=== read_parameter ===")
-        df_oxy = comfort.read_parameter(conn, "OXYGEN",
-                                        quality_flags=comfort.QC_GOOD, limit=1000)
+        df_oxy = comfort.read_parameter(conn,
+                                        param_name="OXYGEN",
+                                        quality_flags=comfort.QC_GOOD,
+                                        limit=1000
+                                        )
         print(f"  OXYGEN (first 1000 QC-good rows): {len(df_oxy)} rows")
