@@ -1,0 +1,412 @@
+"""Profile analysis functions for COMFORT data."""
+from __future__ import annotations
+
+import logging
+import numpy as np
+import pandas as pd
+from numpy.typing import ArrayLike
+
+# Columns that are never the measured-value column
+_KNOWN_NON_VALUE_COLS = frozenset({
+    "PROFILE_NUMBER", "LEV_DBAR", "LEV_M", "LATITUDE", "LONGITUDE",
+    "DATEANDTIME", "ID", "PQF1", "PQF2", "SQF", "BOTTLE_NUMBER",
+    "PROFILE_BEST", "UNITS_ID", "INSTRUMENT_ID", "SA", "CT", "sigma0",
+})
+
+
+def _resolve_profile_col(df: pd.DataFrame, profile_col: str | list[str] | None) -> str | list[str]:
+    """Return profile grouping column(s). Defaults to [ID, PROFILE_NUMBER] when available."""
+    # Use given profile_col
+    if profile_col is not None:
+        return profile_col
+
+    # Use [ID, PROFILE_NUMBER] if available
+    if "ID" in df.columns and "PROFILE_NUMBER" in df.columns:
+        return ["ID", "PROFILE_NUMBER"]
+
+    # Fallback
+    return "PROFILE_NUMBER"
+
+
+def _profile_key_dict(profile_col: str | list[str], pid) -> dict:
+    """Map profile column name(s) to group key value(s)."""
+    if isinstance(profile_col, list):
+        return dict(zip(profile_col, pid))
+    return {profile_col: pid}
+
+
+def _detect_param_col(df, param_col):
+    """Return param_col if it exists, otherwise auto-detect the value column."""
+    # Use param_col
+    if param_col in df.columns:
+        return param_col
+
+    # Infer potential candidates
+    candidates = [c for c in df.columns if c not in _KNOWN_NON_VALUE_COLS]
+    if len(candidates) == 1:
+        logging.debug("_detect_param_col: auto-detected %r", candidates[0])
+        return candidates[0]
+
+    # Fallback
+    return param_col
+
+
+def detect_depth_col(df: pd.DataFrame, depth_col: str = "LEV_M") -> str:
+    """Return a valid depth column name, falling back between LEV_M and LEV_DBAR.
+
+    Args:
+        df (pandas.DataFrame): DataFrame to inspect.
+        depth_col (str): Preferred depth column. Default is ``"LEV_M"``.
+    Returns:
+        str: The depth column name that exists in *df*.
+    """
+    # Check if depth_col exists
+    if depth_col in df.columns:
+        return depth_col
+
+    # Use fallback (if depth_col does not exist)
+    fallback = "LEV_DBAR" if depth_col == "LEV_M" else "LEV_M"
+    if fallback in df.columns:
+        logging.debug("detect_depth_col: %r not found, using %r", depth_col, fallback)
+        return fallback
+
+    # Raise error if no depth column was found
+    raise KeyError(
+        f"Depth column {depth_col!r} not found in DataFrame. "
+        f"Available columns: {list(df.columns)}"
+    )
+
+
+def vertical_gradient(df: pd.DataFrame,
+                      param_col: str = "VAL",
+                      depth_col: str = "LEV_M",
+                      profile_col: str | list[str] | None = None
+                      ) -> pd.DataFrame:
+    """Compute the vertical gradient of a parameter within each profile.
+
+    Args:
+        df (pandas.DataFrame): Input DataFrame.
+        param_col (str): Column with measured values.
+        depth_col (str): Column with depth [m].
+        profile_col (str or list<str>): Column(s) identifying individual profiles.
+            Defaults to ``["ID", "PROFILE_NUMBER"]`` when both exist, else
+            ``"PROFILE_NUMBER"``.
+    Returns:
+        pandas.DataFrame: Copy of *df* with added column
+            ``<param_col>_gradient``.
+    """
+    profile_col = _resolve_profile_col(df, profile_col)
+    param_col = _detect_param_col(df, param_col)
+    depth_col = detect_depth_col(df, depth_col)
+    sort_cols = (profile_col if isinstance(profile_col, list) else [profile_col]) + [depth_col]
+    df_out = df.copy().sort_values(sort_cols)
+    grad_col = f"{param_col}_gradient"
+    df_out[grad_col] = np.nan
+
+    # Compute gradient per profile using central differences
+    for _, group in df_out.groupby(profile_col, sort=False):
+        # Drop nans
+        valid = group[[depth_col, param_col]].dropna()
+        if len(valid) < 2:
+            continue
+
+        # Compute gradient
+        dv = np.gradient(valid[param_col].values, valid[depth_col].values)
+        df_out.loc[valid.index, grad_col] = dv
+
+    return df_out
+
+
+def profile_completeness(df: pd.DataFrame,
+                         depth_col: str = "LEV_M",
+                         profile_col: str | list[str] | None = None,
+                         reference_depths: ArrayLike | None = None,
+                         tolerance: float = 5.0
+                         ) -> pd.DataFrame:
+    """Assess vertical sampling completeness of each profile.
+
+    Args:
+        df (pandas.DataFrame): Input DataFrame.
+        depth_col (str): Column with depth [m].
+        profile_col (str or list<str>): Column(s) identifying individual profiles.
+            Defaults to ``["ID", "PROFILE_NUMBER"]`` when both exist, else
+            ``"PROFILE_NUMBER"``.
+        reference_depths (array-like): Standard depth levels to measure
+            coverage against. When provided, a ``coverage_fraction``
+            column (0-1) is added.
+        tolerance (float): Tolerance [m] for matching observed
+            depths to reference levels. Default is 5m.
+    Returns:
+        pandas.DataFrame: One row per profile with columns
+            [profile_col, n_levels, depth_min, depth_max, depth_range,
+            coverage_fraction (optional)].
+    """
+    profile_col = _resolve_profile_col(df, profile_col)
+    depth_col = detect_depth_col(df, depth_col)
+
+    # Iterate over profiles
+    rows = []
+    for pid, group in df.groupby(profile_col):
+        # Drop nans
+        depths = group[depth_col].dropna().values
+
+        # Assemble output row
+        row = {
+            **_profile_key_dict(profile_col, pid),
+            "n_levels": len(depths),
+            "depth_min": float(depths.min()) if len(depths) else np.nan,
+            "depth_max": float(depths.max()) if len(depths) else np.nan,
+            "depth_range": float(depths.max() - depths.min()) if len(depths) > 1 else 0.0,
+        }
+
+        # Check how many reference levels are covered within tolerance
+        if reference_depths is not None:
+            ref = np.asarray(reference_depths, dtype=float)
+            covered = sum(
+                np.any(np.abs(depths - r) <= tolerance) for r in ref
+            )
+            row["coverage_fraction"] = covered / len(ref) if len(ref) else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def mixed_layer_depth(df: pd.DataFrame,
+                      density_col: str | None = None,
+                      temp_col: str | None = None,
+                      depth_col: str = "LEV_M",
+                      profile_col: str | list[str] | None = None,
+                      delta_density: float = 0.03,
+                      delta_temp: float = 0.2,
+                      reference_depth: float = 10.0
+                      ) -> pd.DataFrame:
+    """Estimate mixed layer depth (MLD) using the threshold method
+    (De Boyer Montégut, C., Madec, G., Fischer, A. S., Lazar, A., & Iudicone, D. (2004).
+    Mixed layer depth over the global ocean: An examination of profile data and
+    a profile-based climatology. Journal of Geophysical Research: Oceans,
+    109, C12003. https://doi.org/10.1029/2004JC002378).
+
+    MLD is the depth where density (or temperature) first differs from its reference value by
+    more than the threshold. If the threshold is never exceeded, ``MLD_m`` is set
+    to the maximum measured depth and ``threshold_exceeded`` is ``False``.
+
+    Args:
+        df (pandas.DataFrame): Input DataFrame with density or
+            temperature and depth columns.
+        density_col (str): Column with potential density anomaly [kg/m3].
+        temp_col (str): Column with temperature [°C]. Used only
+            when ``density_col`` is ``None``.
+        depth_col (str): Column with depth [m].
+        profile_col (str or list<str>): Column(s) identifying individual profiles.
+            Defaults to ``["ID", "PROFILE_NUMBER"]`` when both exist, else
+            ``"PROFILE_NUMBER"``.
+        delta_density (float): Density threshold [kg/m3]. Default 0.03.
+        delta_temp (float): Temperature threshold [°C]. Default 0.2.
+        reference_depth (float): Reference depth [m]. The nearest
+            measured depth is used when no exact match exists.
+            Default 10.0m.
+    Returns:
+        pandas.DataFrame: One row per profile with columns
+            [profile_col, ``'MLD_m'``, ``'threshold_exceeded'``].
+    """
+    # Get column names
+    if density_col is None and temp_col is None:
+        raise ValueError("Provide at least one of density_col or temp_col")
+
+    profile_col = _resolve_profile_col(df, profile_col)
+    depth_col = detect_depth_col(df, depth_col)
+
+    # Select variable and threshold (density preferred over temperature)
+    col = density_col if density_col is not None else temp_col
+    delta = delta_density if density_col is not None else delta_temp
+
+    # Iterate over profiles
+    rows = []
+    for pid, group in df.groupby(profile_col):
+        # Drop nans
+        valid = group[[depth_col, col]].dropna().sort_values(depth_col)
+        if len(valid) < 2:
+            logging.debug("mixed_layer_depth: profile %s has < 2 valid levels, skipped", pid)
+            continue
+
+        z = valid[depth_col].values
+        v = valid[col].values
+
+        # Find reference value at nearest depth
+        ref_idx = int(np.argmin(np.abs(z - reference_depth)))
+        v_ref = v[ref_idx]
+
+        # Walk downward until threshold is exceeded
+        mld = float(z[-1])
+        exceeded = False
+        for i in range(ref_idx + 1, len(z)):
+            # Threshold test for density/temperature
+            if abs(v[i] - v_ref) > delta:
+                # Determine the crossed threshold (upper or lower)
+                target = v_ref + delta if v[i] > v_ref else v_ref - delta
+
+                # Linear interpolation to estimate exact crossing depth
+                mld = float(z[i - 1] + (target - v[i - 1]) * (z[i] - z[i - 1]) / (v[i] - v[i - 1]))
+
+                exceeded = True
+                break
+
+        rows.append({**_profile_key_dict(profile_col, pid), "MLD_m": mld, "threshold_exceeded": exceeded})
+
+    return pd.DataFrame(rows)
+
+
+def pycnocline_depth(df: pd.DataFrame,
+                     density_col: str,
+                     depth_col: str = "LEV_M",
+                     profile_col: str | list[str] | None = None,
+                     min_gradient: float = 0.0
+                     ) -> pd.DataFrame:
+    """Find the depth of maximum density gradient (pycnocline depth).
+    Pass ``min_gradient`` and check the ``significant`` column fo filter
+    out weak pycnoclines.
+
+    Args:
+        df (pandas.DataFrame): Input DataFrame with density and depth columns.
+        density_col (str): Column with potential density anomaly [kg/m3].
+        depth_col (str): Column with depth [m].
+        profile_col (str or list<str>): Column(s) identifying individual profiles.
+            Defaults to ``["ID", "PROFILE_NUMBER"]`` when both exist, else
+            ``"PROFILE_NUMBER"``.
+        min_gradient (float): Minimum gradient [kg/m3 per metre] to be
+            considered a pycnocline. Default 0.0 (no filtering).
+    Returns:
+        pandas.DataFrame: One row per profile with columns
+            [profile_col, ``'pycnocline_depth_m'``, ``'max_gradient'``,
+            ``'significant'``].
+    """
+    profile_col = _resolve_profile_col(df, profile_col)
+    depth_col = detect_depth_col(df, depth_col)
+
+    # Iterate over profiles
+    rows = []
+    for pid, group in df.groupby(profile_col):
+        # Drop nans
+        valid = group[[depth_col, density_col]].dropna().sort_values(depth_col)
+        if len(valid) < 2:
+            logging.debug("pycnocline_depth: profile %s has < 2 valid levels, skipped", pid)
+            continue
+
+        z = valid[depth_col].values
+        rho = valid[density_col].values
+
+        # Pycnocline = depth of maximum |d(density)/dz|
+        grad = np.gradient(rho, z)
+        idx = int(np.argmax(np.abs(grad)))
+
+        rows.append({
+            **_profile_key_dict(profile_col, pid),
+            "pycnocline_depth_m": float(z[idx]),
+            "max_gradient": float(grad[idx]),
+            "significant": bool(abs(grad[idx]) >= min_gradient),
+        })
+
+    return pd.DataFrame(rows)
+
+
+def interpolate_depth_levels(df: pd.DataFrame,
+                             target_depths: ArrayLike,
+                             param_col: str = "VAL",
+                             depth_col: str = "LEV_M",
+                             profile_col: str | list[str] | None = None
+                             ) -> pd.DataFrame:
+    """Linearly interpolate profiles onto standardised depth levels. Only depth
+    levels within the measured range are returned. Profiles with <2 valid
+    measurements are skipped.
+
+    Args:
+        df (pandas.DataFrame): Input DataFrame.
+        target_depths (array-like): Target depth levels [m].
+        param_col (str): Column with measured values.
+        depth_col (str): Column with depth [m].
+        profile_col (str or list<str>): Column(s) identifying individual profiles.
+            Defaults to ``["ID", "PROFILE_NUMBER"]`` when both exist, else
+            ``"PROFILE_NUMBER"``.
+    Returns:
+        pandas.DataFrame: DataFrame with one row per profile and target depth.
+    """
+    profile_col = _resolve_profile_col(df, profile_col)
+    param_col = _detect_param_col(df, param_col)
+    depth_col = detect_depth_col(df, depth_col)
+    target_depths = np.asarray(target_depths, dtype=float)
+
+    # Identify profile keys and metadata
+    profile_keys = profile_col if isinstance(profile_col, list) else [profile_col]
+    meta_cols = [c for c in ("LATITUDE", "LONGITUDE", "DATEANDTIME", "ID")
+                 if c in df.columns and c not in profile_keys]
+
+    # Interpolate each profile
+    chunks = []
+    for pid, group in df.groupby(profile_col):
+        # Drop nan values
+        valid = group[[depth_col, param_col]].dropna().sort_values(depth_col)
+        if len(valid) < 2:
+            logging.debug("interpolate_depth_levels: profile %s has < 2 valid levels, skipped", pid)
+            continue
+
+        z = valid[depth_col].values
+        v = valid[param_col].values
+
+        # Only work with depths in the given range
+        in_range = (target_depths >= z.min()) & (target_depths <= z.max())
+        if not in_range.any():
+            continue
+
+        # Interpolate depths
+        depths_sel = target_depths[in_range]
+        vals_interp = np.interp(depths_sel, z, v)
+
+        # Build a DataFrame chunk for this profile
+        chunk = pd.DataFrame({depth_col: depths_sel, param_col: vals_interp})
+        for c in profile_keys + meta_cols:
+            chunk[c] = group[c].iloc[0]
+        chunks.append(chunk)
+
+    if not chunks:
+        return pd.DataFrame()
+    return pd.concat(chunks, ignore_index=True)
+
+
+def seasonal_mean(
+    df: pd.DataFrame,
+    value_col: str = "VAL",
+    date_col: str = "DATEANDTIME",
+    group_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Annual mean with monthly averaging to correct seasonal sampling bias.
+
+    Args:
+        df (pandas.DataFrame): with value, date and spatial/group columns.
+        value_col (str): Column containing measured values.
+        date_col (str): Column containing datetime values.
+        group_cols (list<str>): Columns that identify spatial cells. Defaults to
+            ``["LATITUDE", "LONGITUDE", "LEV_M"]``.
+
+    Returns:
+        pd.DataFrame with columns ``group_cols + ["YEAR", value_col]``,
+        one row per group per year.
+    """
+    if group_cols is None:
+        group_cols = ["LATITUDE", "LONGITUDE", "LEV_M"]
+
+    # Extract year and month data
+    temp = df.copy()
+    temp[date_col] = pd.to_datetime(temp[date_col])
+    temp["_YEAR"] = temp[date_col].dt.year
+    temp["_MONTH"] = temp[date_col].dt.month
+
+    # Monthly mean per cell per year
+    monthly = temp.groupby(
+        group_cols + ["_YEAR", "_MONTH"], as_index=False,
+    ).agg({value_col: "mean"})
+
+    # Annual mean as average of monthly means
+    annual = monthly.groupby(
+        group_cols + ["_YEAR"], as_index=False,
+    ).agg({value_col: "mean"})
+
+    return annual.rename(columns={"_YEAR": "YEAR"})
