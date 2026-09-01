@@ -582,7 +582,7 @@ def load_comfort(
                 if "UNITS_ID" in df.columns:
                     uid_set = set(df["UNITS_ID"].dropna().unique())
                     _param_unit_ids[param] = uid_set
-                    if len(uid_set) > 1:
+                    if len(uid_set) > 1 and _converter is None:
                         names = ", ".join(
                             _units_map.get(int(u), str(int(u)))
                             for u in sorted(uid_set)
