@@ -18,7 +18,7 @@ _EARTH_RADIUS_KM = 6371.0
 def distance_to_coast(df: pd.DataFrame, lat_col: str = "LATITUDE",
                       lon_col: str = "LONGITUDE", resolution: str = "110m",
                       coastline_geom: object = None) -> pd.Series:
-    """Compute great-circle distance from each observation to the nearest coastline.
+    """Approximates the distance of each observation to the nearest coastline.
 
     Uses Natural Earth coastlines (cached via cartopy) unless a custom
     geometry is provided. Coastline vertices are indexed with a KDTree
@@ -183,7 +183,7 @@ def water_mass_masks(df: pd.DataFrame, regions: dict | str | Path | gpd.GeoDataF
                      lat_col: str = "LATITUDE", lon_col: str = "LONGITUDE",
                      region_name_col: str = "name",
                      output_col: str = "region") -> pd.DataFrame:
-    """Assign each observation to a geographic region.
+    """Assign each observation to a 2d geographic region.
 
     For overlapping regions the first match wins (dict order /
     GeoDataFrame row order). Observations outside every region get ``NaN``.
