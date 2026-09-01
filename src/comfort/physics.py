@@ -43,8 +43,8 @@ def convert_salinity(sp: float | np.ndarray | pd.Series,
     Args:
         sp (array-like): Practical Salinity [PSS-78].
         pressure (array-like): Sea pressure [dbar] (0 dbar at the ocean surface).
-        longitude (array-like): Longitude [degrees East].
-        latitude (array-like): Latitude [degrees North].
+        longitude (array-like): Longitude [°East].
+        latitude (array-like): Latitude [°North].
     Returns:
         pandas.Series: Absolute Salinity SA [g/kg].
     """
@@ -59,13 +59,13 @@ def convert_temperature(t_insitu: float | np.ndarray | pd.Series,
     """Convert in-situ temperature to a TEOS-10 temperature variable.
 
     Args:
-        t_insitu (array-like): In-situ temperature [deg C, ITS-90].
+        t_insitu (array-like): In-situ temperature [°C, ITS-90].
         sa (array-like): Absolute Salinity [g/kg]
             (from :func:`convert_salinity`).
         pressure (array-like): Sea pressure [dbar].
         to (str): Target variable:
-            ``"CT"`` - Conservative Temperature [deg C];
-            ``"pt0"`` - potential temperature ref. 0 dbar [deg C].
+            ``"CT"`` - Conservative temperature [°C];
+            ``"pt0"`` - Potential temperature ref. 0 dbar [°C].
     Returns:
         pandas.Series
     Raises:
@@ -92,7 +92,7 @@ def compute_density(sa: float | np.ndarray | pd.Series,
 
     Args:
         sa (array-like): Absolute Salinity [g/kg].
-        ct (array-like): Conservative Temperature [deg C].
+        ct (array-like): Conservative Temperature [°C].
         pressure (array-like): Sea pressure [dbar]. Required only for
             ``quantity='rho'``, ignored otherwise.
         quantity (str): What to compute:
@@ -134,20 +134,16 @@ def compute_buoyancy_frequency(df: pd.DataFrame, sa_col: str, ct_col: str,
                                lat_col: str = "LATITUDE") -> pd.DataFrame:
     """Compute Brunt-Vaisala (buoyancy) frequency N2 for each profile.
 
-    N2 > 0 indicates stable stratification; N2 < 0 indicates gravitational
-    instability. Values are computed at mid-depths between consecutive
-    levels using :func:`gsw.Nsquared`.
-
-    Requires temperature and salinity on the same row - use a wide-format
-    DataFrame (e.g. from :func:`add_teos10_variables`).
+    N2 > 0 indicates stable stratification.
+    N2 < 0 indicates gravitational instability.
 
     Args:
         df (pandas.DataFrame): Wide-format DataFrame with SA and CT columns.
         sa_col (str): Column with Absolute Salinity [g/kg].
-        ct_col (str): Column with Conservative Temperature [deg C].
+        ct_col (str): Column with Conservative Temperature [°C].
         pressure_col (str): Column with sea pressure [dbar].
         profile_col (str): Column identifying individual profiles.
-        lat_col (str): Latitude column [degrees N] for gravitational
+        lat_col (str): Latitude column [°N] for gravitational
             acceleration correction. Falls back to 0 if absent.
     Returns:
         pandas.DataFrame: One row per consecutive level pair per profile
@@ -191,7 +187,7 @@ def compute_spiciness(sa: float | np.ndarray | pd.Series,
 
     Args:
         sa (array-like): Absolute Salinity [g/kg].
-        ct (array-like): Conservative Temperature [deg C].
+        ct (array-like): Conservative Temperature [°C].
         reference_pressure (int): Reference pressure in dbar:
             ``0`` - upper ocean (spiciness0);
             ``2000`` - deep ocean (spiciness2).
@@ -227,13 +223,13 @@ def add_teos10_variables(df: pd.DataFrame, sp_col: str, t_col: str,
         df (pandas.DataFrame): DataFrame with Practical Salinity, in-situ
             temperature, sea pressure, longitude and latitude columns.
         sp_col (str): Column with Practical Salinity [PSS-78].
-        t_col (str): Column with in-situ temperature [deg C, ITS-90].
+        t_col (str): Column with in-situ temperature [°C, ITS-90].
         pressure_col (str): Column with sea pressure [dbar].
-        lon_col (str): Column with longitude [degrees East].
-        lat_col (str): Column with latitude [degrees North].
+        lon_col (str): Column with longitude [°East].
+        lat_col (str): Column with latitude [°North].
     Returns:
         pandas.DataFrame: Copy of *df* with three added columns:
-            ``SA`` [g/kg], ``CT`` [deg C], ``sigma0`` [kg/m3].
+            ``SA`` [g/kg], ``CT`` [°C], ``sigma0`` [kg/m3].
     """
     out = df.copy()
 
