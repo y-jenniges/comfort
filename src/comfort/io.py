@@ -341,7 +341,7 @@ def describe_variables(conn: sqlite3.Connection,
     result = pd.DataFrame(rows)
 
     # Resolve unit IDs to names
-    id_to_unit = _load_lookup_map(conn, "UNITS", "ID", "UNIT")
+    id_to_unit = _load_lookup_map(conn, "UNITS", "ID", "NAME_SHORT")
     result["units"] = result["units_ids"].apply(
         lambda ids: " / ".join(
             id_to_unit.get(i, str(i)) for i in sorted(ids)
@@ -543,7 +543,7 @@ def load_comfort(
         # Resolve lookup tables for xarray coordinates
         _instrument_map = _load_lookup_map(conn, "INSTRUMENT")
         _platform_map = _load_lookup_map(conn, "PLATFORM")
-        _units_map = _load_lookup_map(conn, "UNITS", "ID", "UNIT")
+        _units_map = _load_lookup_map(conn, "UNITS", "ID", "NAME_SHORT")
 
         # Station → platform_id mapping (when column exists)
         _station_platform: dict[int, int] = {}
