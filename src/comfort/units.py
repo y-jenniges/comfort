@@ -95,6 +95,22 @@ class UnitsConverter:
 
         return pd.concat(parts).dropna(subset=[self.value_column])
 
+    def default_unit_name(self, param_table_name: str) -> str | None:
+        """Return the human-readable name of a parameter's default unit.
+
+        Args:
+            param_table_name (str): Table name (e.g. ``'P_OXYGEN'``).
+        Returns:
+            str or None: Unit name (e.g. ``'µmol/kg'``), or ``None`` when
+                no default unit is registered for *param_table_name*.
+        """
+        mask = self.df_default_units["NAME_TABLE"] == param_table_name
+        if not mask.any():
+            return None
+        target = int(self.df_default_units.loc[mask, "UNITS_ID_DEFAULT"].iloc[0])
+        row = self.df_units.loc[self.df_units["ID"] == target, "NAME_SHORT"]
+        return row.iloc[0] if not row.empty else None
+
     def convert_units(self, tables: list[str], use_density: bool = False,
                       override_old_tables: bool = False) -> dict[str, str]:
         """Convert units for the given parameter tables to their default unit.
