@@ -144,6 +144,118 @@ class _BaseGrid:
 
         return df
 
+    @staticmethod
+    def _flatten_bin_agg(grouped: pd.DataFrame, value_col: str, agg) -> pd.DataFrame:
+        """Flatten the (column, statistic) column names pandas produces."""
+        # Single aggregation (e.g. agg="mean") already has flat columns
+        if not isinstance(agg, (list, tuple)):
+            return grouped
+
+        # Rename aggregated columns to the name of their statistic
+        grouped = grouped.copy()
+        grouped.columns = [
+            c[0] if c[0] != value_col else c[1]
+            for c in grouped.columns.to_flat_index()
+        ]
+
+        # Rename the first requested stat's column back to value_col
+        first_stat = agg[0] if isinstance(agg[0], str) else agg[0].__name__
+        return grouped.rename(columns={first_stat: value_col})
+
+    def bin_space(self, df: pd.DataFrame, value_col: str | None = None, agg: None | str | list[str]=None) -> pd.DataFrame:
+        """Bin LATITUDE/LONGITUDE/LEV_M in *df* onto this grid's cell centres.
+
+        Usable for data already in memory (e.g. after
+        ``load_comfort``), not in the database.
+
+        Args:
+            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M.
+            value_col (str): Column to aggregate. Required if *agg* is given;
+                omit both to get back every row of *df* with its coordinates
+                snapped to the grid (e.g. to run a custom aggregation like
+                ``seasonal_mean`` before further binning).
+            agg: Aggregation passed to ``DataFrame.agg``. A string ("mean"),
+                a list of strings/callables, or a callable.
+        Returns:
+            pandas.DataFrame: One row per occupied cell if *agg* is given,
+                otherwise one row per input row.
+        """
+        # Snap LATITUDE/LONGITUDE/LEV_M onto this grid's cell centres
+        df = self._map_lat_lon_depth(df.copy())
+
+        # Drop rows outside the grid's extent
+        df = df.dropna(subset=["LATITUDE", "LONGITUDE", "LEV_M"])
+        df = df.astype({"LATITUDE": float, "LONGITUDE": float, "LEV_M": float})
+        if agg is None:
+            # No aggregation requested, return every row with snapped coordinates
+            return df
+
+        # Group rows that snapped onto the same cell and aggregate value_col
+        grouped = df.groupby(["LATITUDE", "LONGITUDE", "LEV_M"], as_index=False).agg({value_col: agg})
+        grouped = self._flatten_bin_agg(grouped, value_col, agg)
+        grouped[value_col] = grouped[value_col].astype(float)
+        return grouped
+
+    def map_dataframes(self, dfs: dict[str, pd.DataFrame], agg="mean",
+                       bin_fn=None, dropping_land_cells: bool = True) -> pd.DataFrame:
+        """Turn a dict of per-parameter DataFrames into one wide grid table.
+
+        The full workflow is two calls: create the grid, then map data onto it::
+
+            grid = Grid(...)  # or SpaceGrid(...)
+            df_wide = grid.map_dataframes(raw)  # bin + merge every parameter
+
+        For each parameter, this performs binning, i.e. snapping the
+        coordinates onto the grid cells (and aggregate) and merging, i.e.
+        merge each parameter's binned result onto a copy of the full grid.
+
+        Args:
+            dfs (dict[str, pandas.DataFrame]): Parameter name -> DataFrame,
+                Each DataFrame must contain LATITUDE, LONGITUDE, LEV_M
+                (+ DATEANDTIME for a ``Grid``) and a value column named
+                after its parameter key.
+            agg: Aggregation passed to ``self.bin(df, value_col, agg=agg)`` for
+                every parameter. A string ("mean"), a list, a callable, or
+                (on a ``Grid``) ``"seasonal_mean"`` for monthly-first annual
+                averaging before binning onto the grid's time steps. Ignored
+                when *bin_fn* is given.
+            bin_fn (callable): ``(df, value_col) -> DataFrame`` used instead of
+                the default ``self.bin(df, value_col, agg=agg)``, for any
+                per-parameter aggregation not expressible via *agg*.
+            dropping_land_cells (bool): Drop grid cells that are on land and
+                never carry a value for any parameter. Default True.
+        Returns:
+            pandas.DataFrame: This grid's template merged with one ``P_<name>``
+                column per input parameter.
+        """
+        # Custom aggregation function
+        if bin_fn is None:
+            bin_fn = lambda df, value_col: self.bin(df, value_col, agg=agg)
+
+        # Start from the full grid template
+        df_wide = self.grid.copy()
+        merge_cols = [c for c in ("LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME")
+                      if c in df_wide.columns]
+
+        # Successively merge each binned parameter onto the grid
+        for name, df in dfs.items():
+            # Rename the value column to P_<name>
+            col = name if name.startswith("P_") else f"P_{name}"
+            if name in df.columns:
+                df = df.rename(columns={name: col})
+            # Binning
+            binned = bin_fn(df, col)
+            # Left-merge on grid
+            df_wide = df_wide.merge(binned, on=merge_cols, how="left")
+
+        if dropping_land_cells:
+            # Drop cells that are on land and have no data for any parameter
+            n_before = len(df_wide)
+            df_wide = drop_land_cells(df_wide).reset_index(drop=True)
+            logging.info("map_dataframes: dropped %d empty land cells (%d -> %d rows)",
+                        n_before - len(df_wide), n_before, len(df_wide))
+        return df_wide
+
 
 class GridManager:
     """Persists Grid objects in the database and retrieves them by ID."""
@@ -267,7 +379,7 @@ class GridManager:
         cur = self.connection.execute(
             f"SELECT * FROM {self.grid_info_table} WHERE grid_id=?;", (grid_id,)
         )
-        info = pd.DataFrame(cur.fetchall(), columns=[x[0] for x in cur.description])
+        info = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
 
         # Helper to set grid parameters
         def _val(col):
@@ -533,6 +645,73 @@ class Grid(_BaseGrid):
 
         return df
 
+    def bin_time(self, df: pd.DataFrame, value_col: str, agg="mean") -> pd.DataFrame:
+        """Bin DATEANDTIME in *df* onto this grid's time steps and aggregate *value_col*.
+
+        Only bins the time axis. LATITUDE/LONGITUDE/LEV_M must already be
+        snapped to grid cell centres (e.g. by calling ``bin_space`` first).
+        Rows are then grouped by cell + time bin together.
+
+        Args:
+            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M,
+                DATEANDTIME and *value_col*.
+            value_col (str): Column to aggregate.
+            agg: Aggregation passed to ``DataFrame.agg``.
+        Returns:
+            pandas.DataFrame: One row per occupied cell and time step.
+        """
+        # Grid DATEANDTIME
+        df = self._map_time(df.copy())
+
+        # Group rows in the same cell and time bin and aggregate value_col
+        grouped = df.groupby(
+            ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"], as_index=False,
+        ).agg({value_col: agg})
+        grouped = self._flatten_bin_agg(grouped, value_col, agg)
+        grouped[value_col] = grouped[value_col].astype(float)
+        grouped["DATEANDTIME"] = grouped["DATEANDTIME"].astype(str)
+        return grouped
+
+    def bin(self, df: pd.DataFrame, value_col: str, agg: str | list[str] ="mean") -> pd.DataFrame:
+        """Bin *df* onto this grid's spatial cells and time steps, aggregating
+        *value_col* per cell. Usable for data already in memory (e.g. after ``load_comfort``),
+         not in the database.
+
+        Args:
+            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M,
+                DATEANDTIME and *value_col*.
+            value_col (str): Column to aggregate.
+            agg: Aggregation passed to ``DataFrame.agg``. A string ("mean"),
+                a list of strings/callables, or a callable. The special
+                value ``"seasonal_mean"`` runs monthly-first annual
+                averaging before binning onto this grid's time steps
+                (common for yearly gridding).
+        Returns:
+            pandas.DataFrame: One row per occupied cell and time step.
+        """
+        if agg == "seasonal_mean":
+            return self._bin_seasonal_mean(df, value_col)
+        return self.bin_time(self.bin_space(df), value_col, agg)
+
+    def _bin_seasonal_mean(self, df: pd.DataFrame, value_col: str) -> pd.DataFrame:
+        """Average value_col per grid cell per year, monthly-first, then bin onto this grid's time steps.
+
+        Implements ``agg="seasonal_mean"`` on ``bin``. A plain annual mean lets
+        months with more observations dominate; averaging month-by-month first,
+        then averaging those (at most 12) monthly means, corrects for that. See
+        ``seasonal_mean`` for the monthly-first averaging itself.
+        """
+        # Grid space, then compute the monthly-first annual mean per cell
+        annual = seasonal_mean(
+            self.bin_space(df), value_col=value_col,
+            group_cols=["LATITUDE", "LONGITUDE", "LEV_M"],
+        )
+
+        # Convert YEAR returned by seasonal_mean into a time stamp
+        annual["DATEANDTIME"] = annual["YEAR"].astype(int).astype(str) + "-01-01 00:00:00"
+        annual = annual.drop(columns=["YEAR"])
+        return self.bin_time(annual, value_col, agg="mean")
+
     def map_tables(self, connection: sqlite3.Connection, param_tables: list[str] | None = None,
                    replace_existing: bool = False, include_z_max: bool = True) -> list[str]:
         """Bin each parameter table into this grid and write the result to the database.
@@ -586,35 +765,13 @@ class Grid(_BaseGrid):
 
             # Fetch data as df
             cur = connection.execute(q, bind)
-            df = pd.DataFrame(cur.fetchall(), columns=[x[0] for x in cur.description])
+            df = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
 
-            # Map lat/lon/depth
-            df = self._map_lat_lon_depth(df)
-
-            # Map DATEANDTIME column according to the time mode
-            df = self._map_time(df)
-
-            # Aggregate cells with same latitude, longitude, depth and time (mean, median, std, count)
-            df_grouped = (
-                df[["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME", "VAL"]]
-                .groupby(["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"])
-                .agg(["mean", "median", "std", "count"])
-                .reset_index()
-            )
-            df_grouped.columns = [
-                x[0] if x[0] != "VAL" else x[1]
-                for x in df_grouped.columns.to_flat_index()
-            ]
-            df_grouped = df_grouped.rename(columns={"mean": "VAL"})
-
-            # Check data types
-            df_grouped = df_grouped.astype(
-                {"DATEANDTIME": str, "LEV_M": float, "LATITUDE": float,
-                 "LONGITUDE": float, "VAL": float}
-            )
+            # Bin onto grid cells and time steps, aggregating (mean, median, std, count)
+            df_grouped = self.bin(df, "VAL", agg=["mean", "median", "std", "count"])
 
             grid_name = f"grid_{self.grid_id}"
-            # Add grid to db (if not yet included)
+            # Add grid to database (if not yet included)
             if not does_table_exist(connection, grid_name, "table"):
                 self.grid.to_sql(grid_name, connection, if_exists="replace",
                                  index=True, index_label="idx")
@@ -623,7 +780,7 @@ class Grid(_BaseGrid):
                     "it will not appear in grid_info."
                 )
 
-            # Write mapped table to db
+            # Write mapped table to database
             df_grouped.to_sql(f"temp_{table}_{self.grid_id}", connection,
                               if_exists="replace", index=False)
 
@@ -712,6 +869,20 @@ class SpaceGrid(_BaseGrid):
         df = water_filled.to_dataframe().reset_index()
         return df.astype({"LEV_M": float, "LATITUDE": float, "LONGITUDE": float, "water": bool})
 
+    def bin(self, df: pd.DataFrame, value_col: str, agg="mean") -> pd.DataFrame:
+        """Bin *df* onto this grid (for data already in memory by e.g.
+        ``load_comfort``, rather than in database).
+
+        Args:
+            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M
+                and *value_col*.
+            value_col (str): Column to aggregate.
+            agg: Aggregation passed to ``DataFrame.agg``. A string ("mean"),
+                a list of strings/callables or a callable.
+        Returns:
+            pandas.DataFrame: One row per occupied grid cell.
+        """
+        return self.bin_space(df, value_col, agg)
 
     def map_tables(self, connection: sqlite3.Connection, param_tables: list[str] | None = None,
                    include_z_max: bool = True, output_dir: str | None = None) -> None:
@@ -752,7 +923,7 @@ class SpaceGrid(_BaseGrid):
 
             # Fetch data as df
             cur = connection.execute(q, bind)
-            df = pd.DataFrame(cur.fetchall(), columns=[x[0] for x in cur.description])
+            df = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
 
             # Map lat/lon/depth
             df = self._map_lat_lon_depth(df)
@@ -770,6 +941,95 @@ class SpaceGrid(_BaseGrid):
             if output_dir is not None:
                 csv_name = os.path.join(output_dir, csv_name)
             joined.to_csv(csv_name)
+
+
+def average_duplicate_locations(
+    raw: dict[str, pd.DataFrame],
+    other_params: list[str] | None = None,
+    temperature_col: str = "TEMPERATURE",
+    loc_cols: list[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Average duplicate location records since a COMFORT station
+    can carry more than one measurement of the same parameter
+    at an identical (lat, lon, depth, time).
+
+    Args:
+        raw (dict[str, pandas.DataFrame]): Per-parameter DataFrames.
+        other_params (list[str]): Parameters to average over identical locations
+            (simple mean). Defaults to all keys in *raw* other than *temperature_col*.
+        temperature_col (str): Column for temperature. Default ``"TEMPERATURE"``.
+        loc_cols (list[str]): Columns identifying a unique location. Default
+            ``["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]``.
+    Returns:
+        dict[str, pandas.DataFrame]: One DataFrame per parameter (plus
+            ``LEV_DBAR`` for *temperature_col*, kept for downstream pressure
+            use e.g. TEOS-10 conversions).
+    """
+    # Identify location and parameter columns (other than temperature)
+    if loc_cols is None:
+        loc_cols = ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]
+    if other_params is None:
+        other_params = [p for p in raw if p != temperature_col]
+
+    # Average temperature and keep pressure column
+    averaged = {}
+    if temperature_col in raw:
+        t_avg = raw[temperature_col].groupby(loc_cols, as_index=False).agg(
+            {temperature_col: "mean", "LEV_DBAR": "mean"})
+        logging.info("average_duplicate_locations: %s %d -> %d",
+                     temperature_col, len(raw[temperature_col]), len(t_avg))
+        averaged[temperature_col] = t_avg
+
+    # Average other parameters
+    for param in other_params:
+        if param not in raw:
+            continue
+        avg = raw[param].groupby(loc_cols, as_index=False).agg({param: "mean"})
+        logging.info("average_duplicate_locations: %s %d -> %d", param, len(raw[param]), len(avg))
+        averaged[param] = avg
+
+    return averaged
+
+
+def seasonal_mean(
+    df: pd.DataFrame,
+    value_col: str = "VAL",
+    date_col: str = "DATEANDTIME",
+    group_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Annual mean with monthly averaging to correct seasonal sampling bias.
+
+    Args:
+        df (pandas.DataFrame): with value, date and spatial/group columns.
+        value_col (str): Column containing measured values.
+        date_col (str): Column containing datetime values.
+        group_cols (list<str>): Columns that identify spatial cells. Defaults to
+            ``["LATITUDE", "LONGITUDE", "LEV_M"]``.
+
+    Returns:
+        pd.DataFrame with columns ``group_cols + ["YEAR", value_col]``,
+        one row per group per year.
+    """
+    if group_cols is None:
+        group_cols = ["LATITUDE", "LONGITUDE", "LEV_M"]
+
+    # Extract year and month data
+    temp = df.copy()
+    temp[date_col] = pd.to_datetime(temp[date_col])
+    temp["_YEAR"] = temp[date_col].dt.year
+    temp["_MONTH"] = temp[date_col].dt.month
+
+    # Monthly mean per cell per year
+    monthly = temp.groupby(
+        group_cols + ["_YEAR", "_MONTH"], as_index=False,
+    ).agg({value_col: "mean"})
+
+    # Annual mean as average of monthly means
+    annual = monthly.groupby(
+        group_cols + ["_YEAR"], as_index=False,
+    ).agg({value_col: "mean"})
+
+    return annual.rename(columns={"_YEAR": "YEAR"})
 
 
 def drop_land_cells(df_wide: pd.DataFrame) -> pd.DataFrame:
@@ -799,37 +1059,6 @@ def drop_land_cells(df_wide: pd.DataFrame) -> pd.DataFrame:
 
     # Drop cells that are on land and never have data, at any depth or time
     return temp[temp["water"] | ever_has_data]
-
-
-def create_wide_table_offline(mapped_tables: list[pd.DataFrame],
-                              dropping_land_cells: bool = True) -> pd.DataFrame:
-    """Merge a list of per-parameter grid DataFrames into a single wide table.
-
-    Args:
-        mapped_tables (list[pandas.DataFrame]): Grid frames, one per parameter.
-        dropping_land_cells (bool): Drop land-only rows. Default is True.
-    Returns:
-        pandas.DataFrame
-    """
-    # Get parameter table names and idx
-    param_tables = [[x for x in df.columns if x.startswith("P_")][0] for df in mapped_tables]
-    param_idx = [(col, idx) for idx, df in enumerate(mapped_tables)
-                 for col in df.columns if col in param_tables]
-
-    # Merge params and grid into one wide table
-    df_wide = mapped_tables[param_idx[0][1]][
-        ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME", "water", param_tables[0]]
-    ]
-    for col, idx in param_idx[1:]:
-        df_wide = df_wide.merge(
-            mapped_tables[idx][["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME", col]],
-            how="left", on=["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"],
-        )
-
-    # Drop land cells
-    if dropping_land_cells:
-        df_wide = drop_land_cells(df_wide)
-    return df_wide
 
 
 def create_wide_table_online(connection: sqlite3.Connection, grid_id: int,
@@ -911,7 +1140,7 @@ def get_missing_value_info_per_param(connection: sqlite3.Connection, wide_table_
     )
 
     # Assemble df
-    num_nulls = pd.DataFrame(cur.fetchall(), columns=[x[0] for x in cur.description]).T.reset_index()
+    num_nulls = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description])).T.reset_index()
     num_nulls.columns = ["parameter", "total"]
     num_nulls = pd.concat(
         [num_nulls,
