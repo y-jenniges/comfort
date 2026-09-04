@@ -58,7 +58,8 @@ def plot_annual_coverage(
             counts = counts / counts.max()
 
         # Plot
-        ax.plot(counts.index, counts.values, label=name, marker=".", markersize=3)
+        label = name.capitalize() if name.isupper() else name
+        ax.plot(counts.index, counts.values, label=label, marker=".", markersize=3)
 
     # Labels and format
     ax.set_xlabel("Year")
