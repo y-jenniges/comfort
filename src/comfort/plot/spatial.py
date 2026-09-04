@@ -12,7 +12,7 @@ from scipy import stats
 
 from ..qc import build_where_clause
 from ..util.sqlite_utils import validate_identifier
-from ._helpers import _require_cartopy, _save_fig
+from ._helpers import _finish, _get_or_create_ax, _require_cartopy
 
 if TYPE_CHECKING:
     import sqlite3
@@ -34,6 +34,7 @@ def plot_spatial_distribution(
     conn: sqlite3.Connection | None = None,
     parameter: str | None = None,
     quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
+    ax: matplotlib.axes.Axes | None = None,
     save_as: str | None = None,
     dpi: int = 300,
 ) -> matplotlib.axes.Axes:
@@ -53,6 +54,8 @@ def plot_spatial_distribution(
         conn: Database connection (alternative to *df*).
         parameter: Parameter name (without ``P_`` prefix).
         quality_flags: QC filters.
+        ax: Axes to draw into. Must already use a cartopy projection when
+            passed explicitly. Creates a new PlateCarree figure when ``None``.
         save_as: Save path.
         dpi: Resolution (dots per inch) used when saving.
 
@@ -88,8 +91,7 @@ def plot_spatial_distribution(
     hist.statistic[hist.statistic == 0] = np.nan
 
     # Plot on a PlateCarree projection
-    fig = plt.figure()
-    ax = fig.add_subplot(projection=ccrs.PlateCarree())
+    ax, standalone = _get_or_create_ax(ax, projection=ccrs.PlateCarree())
     ax.add_feature(cfeature.LAND, facecolor="grey")
     ax.gridlines(draw_labels=True)
     image = ax.pcolormesh(
@@ -97,15 +99,14 @@ def plot_spatial_distribution(
         cmap=plt.cm.get_cmap(cmap, 64), shading="flat",
         transform=ccrs.PlateCarree(),
     )
-    fig.colorbar(
+    ax.figure.colorbar(
         image, ax=ax, orientation="horizontal", fraction=0.1, aspect=40,
         pad=0.08, label=colorbar_label or f"Number of {parameter or ''} samples",
     )
     if clim:
         image.set_clim(*clim)
 
-    _save_fig(save_as, dpi)
-    return ax
+    return _finish(ax, standalone, save_as, dpi)
 
 
 def plot_lat_lon_range(
@@ -133,11 +134,7 @@ def plot_lat_lon_range(
         The matplotlib Axes.
     """
     ccrs, _ = _require_cartopy()
-
-    # Create a global map if no axes are provided
-    if ax is None:
-        fig = plt.figure()
-        ax = fig.add_subplot(projection=ccrs.PlateCarree())
+    ax, standalone = _get_or_create_ax(ax, projection=ccrs.PlateCarree())
 
     ax.coastlines()
     ax.set_global()
@@ -149,8 +146,7 @@ def plot_lat_lon_range(
     for x, y1, y2 in [(lon_min, lat_min, lat_max), (lon_max, lat_min, lat_max)]:
         ax.plot([x, x], [y1, y2], color="blue", linewidth=2)
 
-    _save_fig(save_as, dpi)
-    return ax
+    return _finish(ax, standalone, save_as, dpi)
 
 
 def plot_missing_value_info_map(
@@ -269,7 +265,7 @@ def plot_missing_value_info_map_over_depth(
                 marker="s", plotnonfinite=True,
             )
             fig.colorbar(ax.collections[0], ax=ax, location="bottom", pad=0.05)
-            ax.set_title(f"% missing values for {param}")
+            ax.set_title(f"% missing values for {param}" if relative else param)
             plt.tight_layout()
             if savefig_folder:
                 os.makedirs(savefig_folder, exist_ok=True)
