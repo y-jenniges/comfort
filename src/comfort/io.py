@@ -7,7 +7,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
-
 import numpy as np
 import pandas as pd
 
@@ -119,9 +118,8 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
                    limit: int | None = None) -> pd.DataFrame:
     """Read a P_* parameter table as a DataFrame with optional QC filtering.
 
-    When any spatial or temporal filter is supplied the ``station`` table is
-    joined automatically and ``LATITUDE``, ``LONGITUDE`` and ``DATEANDTIME``
-    columns are included.
+    ``station`` table is always joined, so ``LATITUDE``, ``LONGITUDE``
+    and ``DATEANDTIME`` columns are always included.
 
     Args:
         conn (sqlite3.Connection): Connection to the database.
@@ -145,41 +143,25 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
     # Validate identifier
     validate_identifier(param_name)
 
-    # Check if geo filters are requested
-    has_geo = any(v is not None for v in (
+    # Build query with geo, profile and quality filters
+    params: list = []
+    conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
+    if profiles is not None:
+        placeholders = ",".join("?" * len(profiles))
+        conditions.append(f"p.PROFILE_NUMBER IN ({placeholders})")
+        params.extend(profiles)
+    _append_geo_conditions(
+        conditions, params, "s.", "s.", "p.", "s.",
         lat_min, lat_max, lon_min, lon_max,
         depth_min, depth_max, date_min, date_max,
-    ))
-    params: list = []
-
-    if has_geo:
-        # Build query with geo, profile and quality filters
-        conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
-        if profiles is not None:
-            placeholders = ",".join("?" * len(profiles))
-            conditions.append(f"p.PROFILE_NUMBER IN ({placeholders})")
-            params.extend(profiles)
-        _append_geo_conditions(
-            conditions, params, "s.", "s.", "p.", "s.",
-            lat_min, lat_max, lon_min, lon_max,
-            depth_min, depth_max, date_min, date_max,
-        )
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        sql = (
-            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
-            f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
-            f"FROM P_{param_name.upper()} p "
-            f"LEFT JOIN station s ON p.ID = s.ID {where}"
-        )
-    else:
-        # Build query with quality and profile filters
-        conditions = [f"{col}{cond}" for col, cond in (quality_flags or [])]
-        if profiles is not None:
-            placeholders = ",".join("?" * len(profiles))
-            conditions.append(f"PROFILE_NUMBER IN ({placeholders})")
-            params.extend(profiles)
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        sql = f"SELECT * FROM P_{param_name.upper()} {where}"
+    )
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    sql = (
+        f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
+        f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
+        f"FROM P_{param_name.upper()} p "
+        f"LEFT JOIN station s ON p.ID = s.ID {where}"
+    )
 
     # Add optional limit to query
     if limit is not None:
@@ -478,6 +460,8 @@ def load_comfort(
         as_xarray: bool = True,
         normalise_columns: bool = False,
         convert_units: bool = False,
+        use_density: bool = False,
+        on_missing: str = "drop",
         limit: int | None = None,
 ) -> xr.Dataset | dict[str, pd.DataFrame]:
     """Load COMFORT data into a filtered xarray Dataset or dict of DataFrames.
@@ -514,8 +498,15 @@ def load_comfort(
             rename all DataFrame columns to lowercase. Default ``False``.
         convert_units (bool): When ``True``, convert each parameter's values
             to its default unit using :class:`comfort.units.UnitsConverter`.
-            Requires ``DATABASE_TABLES`` and ``UNITS`` tables in the database;
-            silently skipped when they are absent.
+        use_density (bool): When ``True`` and ``convert_units=True``, use
+            computed density for volumetric conversions instead of the
+            constant 1.025 kg/L (COMFORT report Appendix C conventions:
+            lab density at 22 °C for most parameters, in-situ-temperature
+            density for chlorophyll and oxygen mL/L, both at atmospheric
+            pressure. Needs temperature/salinity).
+        on_missing (str): Policy for rows that cannot be converted when
+            ``convert_units=True``: ``'drop'`` (default),
+            ``'keep'`` (retain original value and UNITS_ID) or ``'raise'``.
         limit (int): Maximum number of rows to load per parameter.
             ``None`` loads all matching rows. Useful as a safeguard for
             large tables like TEMPERATURE or SALINITY.
@@ -572,11 +563,25 @@ def load_comfort(
         # Load each parameter with SQL-level filtering
         dfs = {}
         for param in parameters:
+            # Get target unit
+            p_up = param.upper()
+            target = _converter.default_unit_id(f"P_{p_up}") if _converter else None
+
+            # Check if temperature and/or salinity are required for unit conversions
+            may_need_density = target in (3, 14)
+            with_temperature = may_need_density and (
+                p_up == "OXYGEN" or (use_density and p_up == "CHLOROPHYLL"))
+            with_salinity = may_need_density and (use_density or p_up == "OXYGEN")
+
             try:
-                df = _read_with_geo(conn, param, quality_flags, limit=limit, **geo_kwargs)
+                # Load param with space, time and optionally T and S columns
+                df = _read_with_geo(conn, param, quality_flags, limit=limit,
+                                    with_temperature=with_temperature,
+                                    with_salinity=with_salinity, **geo_kwargs)
             except Exception as exc:
                 logging.warning("load_comfort: could not read %s (%s)", param, exc)
                 continue
+
             if not df.empty:
                 # Track distinct units
                 if "UNITS_ID" in df.columns:
@@ -595,7 +600,17 @@ def load_comfort(
 
                 # Convert to default unit before renaming VAL
                 if _converter is not None and "VAL" in df.columns:
-                    df = _converter.convert_dataframe(df, f"P_{param}")
+                    df = _converter.convert_dataframe(df, f"P_{param}",
+                                                      use_density=use_density,
+                                                      on_missing=on_missing)
+                    # Empty df warning
+                    if df.empty:
+                        logging.warning("load_comfort: no %s rows left after unit conversion", param)
+                        continue
+
+                    # Update unit IDs
+                    if "UNITS_ID" in df.columns:
+                        _param_unit_ids[param] = set(df["UNITS_ID"].dropna().unique())
 
                 # Rename generic VAL column to parameter name
                 if "VAL" in df.columns:
@@ -741,10 +756,10 @@ def load_comfort(
 def _read_with_geo(conn, param_name, quality_flags,
                    lat_min=None, lat_max=None, lon_min=None, lon_max=None,
                    depth_min=None, depth_max=None, date_min=None, date_max=None,
-                   limit=None):
+                   limit=None, with_temperature=False, with_salinity=False):
     """Read a parameter table with lat/lon/time, pushing all filters to SQL.
 
-    Tries the E_* extended view first; falls back to an explicit P_* JOIN station.
+    Tries the E_* extended view first and falls back to an explicit P_* JOIN station.
     """
     from .database.information import does_table_exist
 
@@ -772,9 +787,25 @@ def _read_with_geo(conn, param_name, quality_flags,
             lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        # Optionally attach T/S for unit conversion (QC filtered)
+        ts_select, ts_join = "", ""
+        ts_qc = build_where_clause(quality_flags)
+        if with_temperature and does_table_exist(conn, "P_TEMPERATURE"):
+            ts_select += ", tmp.temperature"
+            ts_join += (f"LEFT JOIN (SELECT ID, LEV_M, AVG(VAL) AS temperature "
+                        f"FROM P_TEMPERATURE {ts_qc} GROUP BY ID, LEV_M) tmp "
+                        f"ON tmp.ID = p.ID AND tmp.LEV_M = p.LEV_M ")
+        if with_salinity and does_table_exist(conn, "P_SALINITY"):
+            ts_select += ", sal.salinity"
+            ts_join += (f"LEFT JOIN (SELECT ID, LEV_M, AVG(VAL) AS salinity "
+                        f"FROM P_SALINITY {ts_qc} GROUP BY ID, LEV_M) sal "
+                        f"ON sal.ID = p.ID AND sal.LEV_M = p.LEV_M ")
+
         query = (
-            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME "
-            f"FROM P_{param_name.upper()} p JOIN station s ON p.ID = s.ID {where}"
+            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
+            f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME{ts_select} "
+            f"FROM P_{param_name.upper()} p JOIN station s ON p.ID = s.ID {ts_join}{where}"
         )
 
     # Add optional limit to query
@@ -782,7 +813,12 @@ def _read_with_geo(conn, param_name, quality_flags,
         query += f" LIMIT {int(limit)}"
 
     # Execute query with parametrised geo/date values
-    return pd.read_sql_query(query, conn, params=params)
+    df = pd.read_sql_query(query, conn, params=params)
+
+    # Normalise timestamp text (E_* views have raw station strings)
+    if "DATEANDTIME" in df.columns and df["DATEANDTIME"].dtype == object:
+        df["DATEANDTIME"] = df["DATEANDTIME"].str.slice(0, 19)
+    return df
 
 
 def _append_geo_conditions(conditions, params, lat_pfx, lon_pfx, depth_pfx, date_pfx,
