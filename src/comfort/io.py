@@ -563,6 +563,7 @@ def load_comfort(
         # Load each parameter with SQL-level filtering
         dfs = {}
         for param in parameters:
+            logging.info("load_comfort: Loading %s...", param)
             # Get target unit
             p_up = param.upper()
             target = _converter.default_unit_id(f"P_{p_up}") if _converter else None
