@@ -11,7 +11,8 @@ import sys
 from dotenv import load_dotenv
 
 import comfort
-from comfort.qc import QC_ALL, QC_GOOD, QCFilter, apply_qc_flags, build_where_clause
+from comfort.qc import (QC_ALL, QC_GOOD, QCFilter, apply_qc_flags,
+                        build_where_clause, flag_salinity_like_oxygen)
 
 load_dotenv()
 
@@ -68,3 +69,15 @@ if __name__ == "__main__":
             print("  PQF2:")
             print(df_all["PQF2"].value_counts().sort_index()
                   .to_string(header=False))
+
+    # --- Content sanity check: Salinity potentially mislabelled as oxygen ---
+    # Likely a bug in COMFORT
+    print("\n=== Salinity-like oxygen check ===")
+    data = comfort.load_comfort(db_path, parameters=["OXYGEN"], quality_flags=QC_GOOD,
+                                convert_units=True, as_xarray=False, limit=100_000)
+    df_oxygen = data.get("OXYGEN")
+    if df_oxygen is not None and "salinity" in df_oxygen.columns:
+        suspect = flag_salinity_like_oxygen(df_oxygen)
+        print(f"  {suspect.sum()} of {len(df_oxygen)} oxygen rows look like mislabelled salinity")
+    else:
+        print("  co-located salinity not available - skipped")
