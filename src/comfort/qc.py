@@ -76,3 +76,70 @@ def apply_qc_flags(df: pd.DataFrame,
                 break
 
     return df[mask].copy()
+
+
+# TEOS-10 reference-scale factor: Absolute Salinity [g/kg] per unit Practical Salinity
+_SP_TO_SA = 35.16504 / 35
+
+
+def flag_salinity_like_oxygen(df: pd.DataFrame, oxygen_col: str = "OXYGEN",
+                              salinity_col: str | None = None,
+                              min_diff: float = 0.05, max_diff: float = 0.30) -> pd.Series:
+    """Flag oxygen values that numerically match co-located salinity.
+
+    Detects a known COMFORT data issue: ~0.8% of ``P_OXYGEN`` rows likely
+    carry a salinity value mislabelled as oxygen (µmol/kg) in the raw
+    dataset.
+
+    Args:
+        df (pandas.DataFrame): Must contain *oxygen_col* and a salinity
+            column - either Absolute Salinity (``SA``) or Practical Salinity
+            (``SALINITY``/``salinity``, converted with the TEOS-10
+            reference-scale factor 35.16504/35 before comparison).
+        oxygen_col (str): Oxygen value column. Default ``'OXYGEN'``.
+        salinity_col (str): Salinity column to compare against. ``None``
+            auto-detects ``SA`` first, then ``SALINITY``/``salinity``.
+            A column named ``SA`` (any casing) is treated as Absolute
+            Salinity, anything else as Practical Salinity.
+        min_diff (float): Lower bound of the suspect band. Default 0.05.
+        max_diff (float): Upper bound of the suspect band. Default 0.30.
+    Returns:
+        pandas.Series: Bool mask aligned with df (True = suspect row).
+    Raises:
+        ValueError: If the oxygen or salinity column cannot be found.
+    """
+    # Resolve column names case-insensitively
+    def _find(name):
+        for col in df.columns:
+            if col.lower() == name.lower():
+                return col
+        return None
+
+    # Find the oxygen column
+    oxy = _find(oxygen_col)
+    if oxy is None:
+        raise ValueError(f"flag_salinity_like_oxygen: column {oxygen_col!r} not found")
+
+    # Auto-detect the salinity column when not given explicitly (SA preferred over SALINITY)
+    if salinity_col is None:
+        sal = _find("SA") or _find("SALINITY")
+        if sal is None:
+            raise ValueError("flag_salinity_like_oxygen: no SA or SALINITY column found")
+    else:
+        sal = _find(salinity_col)
+        if sal is None:
+            raise ValueError(f"flag_salinity_like_oxygen: column {salinity_col!r} not found")
+
+    # Convert Practical Salinity to the Absolute Salinity
+    absolute = df[sal] if sal.lower() == "sa" else df[sal] * _SP_TO_SA
+
+    # Suspect rows: Oxygen sits within [min_diff, max_diff] of the salinity
+    # value - a real oxygen reading would likely not track salinity this closely
+    mask = (absolute - df[oxy]).between(min_diff, max_diff).fillna(False)
+    if mask.any():
+        # Print how common the issue is in this DataFrame
+        logging.warning(
+            "flag_salinity_like_oxygen: %d of %d rows (%.2f%%) look like mislabelled salinity",
+            int(mask.sum()), len(df), 100 * mask.mean(),
+        )
+    return mask
