@@ -245,3 +245,56 @@ def add_teos10_variables(df: pd.DataFrame, sp_col: str, t_col: str,
     out["CT"] = convert_temperature(out[t], out["SA"], out[p], to="CT").values
     out["sigma0"] = compute_density(out["SA"], out["CT"], quantity="sigma0").values
     return out
+
+
+def convert_to_potential_temperature(
+    averaged: dict[str, pd.DataFrame],
+    temperature_col: str = "TEMPERATURE",
+    salinity_col: str = "SALINITY",
+    loc_cols: list[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Convert in-situ temperature to potential temperature (gsw).
+
+    Needs co-located salinity and pressure (``LEV_DBAR``).
+
+    Args:
+        averaged (dict[str, pandas.DataFrame]): Per-parameter DataFrames. Must
+            contain *temperature_col* (with a ``LEV_DBAR`` column) and
+            *salinity_col*.
+        temperature_col (str): Key for temperature. Default ``"TEMPERATURE"``.
+        salinity_col (str): Key for salinity. Default ``"SALINITY"``.
+        loc_cols (list[str]): Columns identifying a unique location. Default
+            ``["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]``.
+    Returns:
+        dict[str, pandas.DataFrame]: Copy of *averaged* with *temperature_col*
+            replaced by potential temperature.
+    Raises:
+        KeyError: If *temperature_col* or *salinity_col* is missing from *averaged*.
+    """
+    # Define location columns
+    if loc_cols is None:
+        loc_cols = ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]
+
+    # Check if temperature and salinity DataFrames are passed
+    if temperature_col not in averaged or salinity_col not in averaged:
+        raise KeyError(
+            f"convert_to_potential_temperature requires both {temperature_col!r} "
+            f"and {salinity_col!r} in `averaged`"
+        )
+
+    # Merge temperature and salinity DataFrames
+    df_t = averaged[temperature_col].merge(
+        averaged[salinity_col][loc_cols + [salinity_col]], on=loc_cols, how="left",
+    )
+
+    # Convert to absolute salinity
+    pressure = df_t["LEV_DBAR"].values
+    sa = convert_salinity(df_t[salinity_col], pressure, df_t["LONGITUDE"], df_t["LATITUDE"])
+
+    # Convert to potential temperature
+    df_t[temperature_col] = convert_temperature(df_t[temperature_col], sa, pressure, to="pt0").values
+
+    # Assemble and return results
+    result = dict(averaged)
+    result[temperature_col] = df_t[loc_cols + ["LEV_DBAR", temperature_col]]
+    return result
