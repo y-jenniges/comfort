@@ -71,15 +71,20 @@ def create_extended_parameter_tables(conn: sqlite3.Connection, table_type: str =
 
     # Define quality filters
     quality_statement = build_where_clause(quality_flags, table_alias="t")
+    ts_quality_statement = build_where_clause(quality_flags)
 
     # Optionally join temperature and salinity
     ts_join = ""
     ts_select = ""
     if add_temperature:
-        ts_join += "LEFT JOIN P_TEMPERATURE AS temp ON (t.LEV_M=temp.LEV_M AND temp.id=s.id) "
+        ts_join += (f"LEFT JOIN (SELECT id, LEV_M, AVG(VAL) AS VAL FROM P_TEMPERATURE "
+                    f"{ts_quality_statement} GROUP BY id, LEV_M) AS temp "
+                    f"ON (t.LEV_M=temp.LEV_M AND temp.id=s.id) ")
         ts_select += ", temp.VAL AS temperature"
     if add_salinity:
-        ts_join += "LEFT JOIN P_SALINITY AS sal ON (t.LEV_M=sal.LEV_M AND sal.id=s.id) "
+        ts_join += (f"LEFT JOIN (SELECT id, LEV_M, AVG(VAL) AS VAL FROM P_SALINITY "
+                    f"{ts_quality_statement} GROUP BY id, LEV_M) AS sal "
+                    f"ON (t.LEV_M=sal.LEV_M AND sal.id=s.id) ")
         ts_select += ", sal.VAL AS salinity"
 
     # Define parameter names
