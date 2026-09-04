@@ -1,0 +1,276 @@
+"""Spatial visualisation, i.e. where the data is and where it is missing."""
+from __future__ import annotations
+
+import logging
+import os
+from typing import TYPE_CHECKING
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib import cm
+from scipy import stats
+
+from ..qc import build_where_clause
+from ..util.sqlite_utils import validate_identifier
+from ._helpers import _require_cartopy, _save_fig
+
+if TYPE_CHECKING:
+    import sqlite3
+    import matplotlib.axes
+    from ..qc import QCFilter
+
+logger = logging.getLogger(__name__)
+
+
+def plot_spatial_distribution(
+    df: pd.DataFrame | None = None,
+    *,
+    lat_col: str = "LATITUDE",
+    lon_col: str = "LONGITUDE",
+    resolution: float = 0.5,
+    clim: tuple[float, float] | None = None,
+    cmap: str = "Spectral_r",
+    colorbar_label: str | None = None,
+    conn: sqlite3.Connection | None = None,
+    parameter: str | None = None,
+    quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
+    save_as: str | None = None,
+    dpi: int = 300,
+) -> matplotlib.axes.Axes:
+    """Count observations per lat/lon bin and display on a world map.
+
+    Accepts either a *df* (must contain *lat_col* and *lon_col*) or a
+    database *conn* along with a *parameter* name.
+
+    Args:
+        df: DataFrame with latitude and longitude columns.
+        lat_col: Latitude column name.
+        lon_col: Longitude column name.
+        resolution: Bin size in degrees.
+        clim: Colour scale limits.
+        cmap: Matplotlib colormap name.
+        colorbar_label: Colour-bar label.
+        conn: Database connection (alternative to *df*).
+        parameter: Parameter name (without ``P_`` prefix).
+        quality_flags: QC filters.
+        save_as: Save path.
+        dpi: Resolution (dots per inch) used when saving.
+
+    Returns:
+        The matplotlib Axes.
+    """
+    ccrs, cfeature = _require_cartopy()
+
+    # Load lat/lon from the database when no DataFrame is given
+    if df is None:
+        if conn is None or parameter is None:
+            raise ValueError(
+                "Provide either a DataFrame (df) or conn + parameter"
+            )
+        table = f"P_{parameter}"
+        validate_identifier(table)
+        quality_statement = build_where_clause(quality_flags)
+        cursor = conn.cursor()
+        ex = cursor.execute(
+            f"SELECT LATITUDE, LONGITUDE FROM {table} {quality_statement};"
+        )
+        df = pd.DataFrame(ex.fetchall(), columns=np.array([x[0] for x in cursor.description]))
+
+    # Bin observations into a 2D lat/lon grid
+    lonbins = np.arange(-180, 180, resolution)
+    latbins = np.arange(-90, 90, resolution)
+    hist = stats.binned_statistic_2d(
+        df[lat_col], df[lon_col], None,
+        bins=[latbins, lonbins], statistic="count",
+    )
+
+    # Mask empty bins so they appear transparent on the map
+    hist.statistic[hist.statistic == 0] = np.nan
+
+    # Plot on a PlateCarree projection
+    fig = plt.figure()
+    ax = fig.add_subplot(projection=ccrs.PlateCarree())
+    ax.add_feature(cfeature.LAND, facecolor="grey")
+    ax.gridlines(draw_labels=True)
+    image = ax.pcolormesh(
+        lonbins, latbins, hist.statistic,
+        cmap=plt.cm.get_cmap(cmap, 64), shading="flat",
+        transform=ccrs.PlateCarree(),
+    )
+    fig.colorbar(
+        image, ax=ax, orientation="horizontal", fraction=0.1, aspect=40,
+        pad=0.08, label=colorbar_label or f"Number of {parameter or ''} samples",
+    )
+    if clim:
+        image.set_clim(*clim)
+
+    _save_fig(save_as, dpi)
+    return ax
+
+
+def plot_lat_lon_range(
+    lat_min: float,
+    lat_max: float,
+    lon_min: float,
+    lon_max: float,
+    *,
+    ax: matplotlib.axes.Axes | None = None,
+    save_as: str | None = None,
+    dpi: int = 300,
+) -> matplotlib.axes.Axes:
+    """Draw a bounding box on a world map.
+
+    Args:
+        lat_min: Southern latitude boundary.
+        lat_max: Northern latitude boundary.
+        lon_min: Western longitude boundary.
+        lon_max: Eastern longitude boundary.
+        ax: Axes to draw into.
+        save_as: Save path.
+        dpi: Resolution (dots per inch) used when saving.
+
+    Returns:
+        The matplotlib Axes.
+    """
+    ccrs, _ = _require_cartopy()
+
+    # Create a global map if no axes are provided
+    if ax is None:
+        fig = plt.figure()
+        ax = fig.add_subplot(projection=ccrs.PlateCarree())
+
+    ax.coastlines()
+    ax.set_global()
+    ax.gridlines(draw_labels=True)
+
+    # Draw horizontal and vertical edges of the bounding box
+    for x1, x2, y in [(lon_min, lon_max, lat_min), (lon_min, lon_max, lat_max)]:
+        ax.plot([x1, x2], [y, y], color="blue", linewidth=2)
+    for x, y1, y2 in [(lon_min, lat_min, lat_max), (lon_max, lat_min, lat_max)]:
+        ax.plot([x, x], [y1, y2], color="blue", linewidth=2)
+
+    _save_fig(save_as, dpi)
+    return ax
+
+
+def plot_missing_value_info_map(
+    df_wide: pd.DataFrame,
+    param_tables: list[str],
+    *,
+    depths: list | None = None,
+    times: list | None = None,
+    savefig_folder: str | None = None,
+    dpi: int = 300,
+) -> None:
+    """Geographic scatter maps of missing values by depth and time slice.
+
+    Args:
+        df_wide: Wide table with ``LATITUDE``, ``LONGITUDE``, ``LEV_M``,
+            ``DATEANDTIME`` and one column per parameter.
+        param_tables: Parameter column names to plot.
+        depths: Depth levels to show (``None`` = all).
+        times: Time values to show (``None`` = all).
+        savefig_folder: Folder to save figures.
+        dpi: Resolution (dots per inch) used when saving.
+    """
+    ccrs, _ = _require_cartopy()
+    df_wide = df_wide.copy()
+    df_wide["DATEANDTIME"] = pd.to_datetime(df_wide["DATEANDTIME"])
+
+    # Default to all available depth levels and time steps
+    depths = depths or list(df_wide["LEV_M"].value_counts().index)
+    times = times or list(df_wide["DATEANDTIME"].value_counts().index)
+
+    # NaN bins rendered as translucent black
+    cmap = cm.get_cmap("viridis").copy()
+    cmap.set_bad("black", alpha=0.2)
+
+    # One map per parameter x time x depth combination
+    for param in param_tables:
+        # Shared color norm for all times/depths of a parameter
+        norm = plt.Normalize(df_wide[param].min(), df_wide[param].max())
+        for t in times:
+            for depth in depths:
+                # Filter df for depth and time
+                dft = df_wide[(df_wide["LEV_M"] == depth) & (df_wide["DATEANDTIME"] == t)]
+
+                # Plot
+                fig = plt.figure(figsize=(10, 8))
+                ax = fig.add_subplot(projection=ccrs.PlateCarree())
+                ax.coastlines()
+                ax.set_global()
+                ax.gridlines(draw_labels=True)
+                ax.scatter(
+                    dft["LONGITUDE"], dft["LATITUDE"], c=dft[param],
+                    cmap=cmap, norm=norm, s=0.5, marker="s", plotnonfinite=True,
+                )
+                fig.colorbar(
+                    ax.collections[0], ax=ax, location="bottom", pad=0.05,
+                )
+                ax.set_title(f"{param} - {depth}m - {t.year}")
+                plt.tight_layout()
+                if savefig_folder:
+                    os.makedirs(savefig_folder, exist_ok=True)
+                    plt.savefig(f"{savefig_folder}/{param}_depth{depth}_time{t.year}.png", dpi=dpi)
+                plt.close()
+
+
+def plot_missing_value_info_map_over_depth(
+    df_wide: pd.DataFrame,
+    param_tables: list[str],
+    *,
+    times: list | None = None,
+    savefig_folder: str | None = None,
+    relative: bool = True,
+    dpi: int = 300,
+) -> None:
+    """Map of missing-value fraction integrated over the water column.
+
+    Args:
+        df_wide: Wide table with ``LATITUDE``, ``LONGITUDE``, ``LEV_M``,
+            ``DATEANDTIME`` and one column per parameter.
+        param_tables: Parameter column names to plot.
+        times: Time values to show (``None`` = all).
+        savefig_folder: Folder to save figures.
+        relative: Plot relative (%) missing fraction.
+        dpi: Resolution (dots per inch) used when saving.
+    """
+    ccrs, _ = _require_cartopy()
+    df_wide = df_wide.copy()
+    df_wide["DATEANDTIME"] = pd.to_datetime(df_wide["DATEANDTIME"])
+    times = times or list(df_wide["DATEANDTIME"].value_counts().index)
+
+    # Colour settings
+    cmap = cm.get_cmap("viridis")
+    norm = plt.Normalize(0, 100)
+
+    for param in param_tables:
+        for t in times:
+            dft = df_wide[df_wide["DATEANDTIME"] == t]
+
+            # Count depth levels with data per lat/lon cell
+            grouped = (
+                dft[["LATITUDE", "LONGITUDE", "LEV_M", param]]
+                .groupby(["LATITUDE", "LONGITUDE"]).agg("count").reset_index()
+            )
+
+            # Compute missingness
+            grouped["missing_relative"] = 100 - grouped[param] / grouped["LEV_M"] * 100
+            plot_col = "missing_relative" if relative else param
+
+            # Plot
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(projection=ccrs.PlateCarree())
+            ax.coastlines()
+            ax.gridlines(draw_labels=True)
+            ax.scatter(
+                grouped["LONGITUDE"], grouped["LATITUDE"],
+                c=grouped[plot_col], cmap=cmap, norm=norm,
+                marker="s", plotnonfinite=True,
+            )
+            fig.colorbar(ax.collections[0], ax=ax, location="bottom", pad=0.05)
+            ax.set_title(f"% missing values for {param}")
+            plt.tight_layout()
+            if savefig_folder:
+                os.makedirs(savefig_folder, exist_ok=True)
+                plt.savefig(f"{savefig_folder}/{param}_time{t.year}.png", dpi=dpi)
