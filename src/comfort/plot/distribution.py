@@ -68,6 +68,7 @@ def boxplot(
     else:
         sns.boxplot(x=value_col, data=df, ax=ax)
     ax.set_title(title or value_col)
+    ax.set_xlabel("")
 
     return _finish(ax, standalone, save_as, dpi)
 

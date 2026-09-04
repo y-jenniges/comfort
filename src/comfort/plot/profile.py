@@ -240,7 +240,7 @@ def plot_section(
             sc.set_clim(*clim)
         ax.figure.colorbar(sc, ax=ax, label=param_label or param_col)
     ax.invert_yaxis()
-    ax.set_xlabel(along_label or along_col)
+    ax.set_xlabel(along_label or _pretty_label(along_col))
     ax.set_ylabel(depth_label)
 
     return _finish(ax, standalone, save_as, dpi)
