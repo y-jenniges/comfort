@@ -11,6 +11,23 @@ if TYPE_CHECKING:
     from ..qc import QCFilter
 
 
+# Human-readable labels for raw column names shown in legends/colorbars
+_PRETTY_LABELS = {
+    "ID": "ID",
+    "PROFILE_NUMBER": "Profile number",
+    "LEV_M": "Depth [m]",
+    "LEV_DBAR": "Depth [dbar]",
+    "LATITUDE": "Latitude",
+    "LONGITUDE": "Longitude",
+    "DATEANDTIME": "Date",
+}
+
+
+def _pretty_label(col: str) -> str:
+    """Human-readable label for a raw column name, falling back to *col* itself."""
+    return _PRETTY_LABELS.get(col, col)
+
+
 def _get_or_create_ax(ax=None, figsize=None, **subplot_kw):
     """Return *(ax, standalone)*.
 

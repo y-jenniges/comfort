@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from ._helpers import _finish, _get_or_create_ax, _resolve_data
+from ._helpers import _finish, _get_or_create_ax, _pretty_label, _resolve_data
 
 if TYPE_CHECKING:
     import sqlite3
@@ -25,7 +25,7 @@ def plot_profile(
         profile_col: str = "PROFILE_NUMBER",
         profiles: list | None = None,
         param_label: str | None = None,
-        depth_label: str = "Depth (m)",
+        depth_label: str = "Depth [m]",
         depth_markers: pd.DataFrame | None = None,
         depth_marker_col: str = "MLD_m",
         conn: sqlite3.Connection | None = None,
@@ -117,7 +117,8 @@ def plot_profile(
 
     n_groups = df.groupby(group_cols).ngroups
     if n_groups <= 10:
-        ax.legend(title="-".join(group_cols), bbox_to_anchor=(1.05, 1), loc="upper left")
+        title = " - ".join(_pretty_label(c) for c in group_cols)
+        ax.legend(title=title, bbox_to_anchor=(1.05, 1), loc="upper left")
 
     return _finish(ax, standalone, save_as, dpi)
 
@@ -131,7 +132,7 @@ def plot_section(
         lat_col: str = "LATITUDE",
         lon_col: str = "LONGITUDE",
         along_label: str | None = None,
-        depth_label: str = "Depth (m)",
+        depth_label: str = "Depth [m]",
         param_label: str | None = None,
         cmap: str = "viridis",
         clim: tuple[float, float] | None = None,

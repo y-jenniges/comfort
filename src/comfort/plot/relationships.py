@@ -19,7 +19,7 @@ import seaborn as sns
 
 from ..qc import build_where_clause
 from ..util.sqlite_utils import validate_identifier
-from ._helpers import _finish, _get_or_create_ax, _save_fig
+from ._helpers import _finish, _get_or_create_ax, _pretty_label, _save_fig
 
 if TYPE_CHECKING:
     import sqlite3
@@ -108,14 +108,14 @@ def plot_correlation(
         )
 
         # Colorbar
-        ax.figure.colorbar(hb, ax=ax, label=color_col if has_color else "count")
+        ax.figure.colorbar(hb, ax=ax, label=_pretty_label(color_col) if has_color else "Count")
     else:
         # Scatter plot with optional colour coding
         scatter_kw = dict(s=marker_size, alpha=alpha, edgecolors="none")
         if color_col and color_col in valid.columns:
             sc = ax.scatter(valid[x_col], valid[y_col], c=valid[color_col],
                             cmap=cmap, **scatter_kw)
-            ax.figure.colorbar(sc, ax=ax, label=color_col)
+            ax.figure.colorbar(sc, ax=ax, label=_pretty_label(color_col))
         else:
             ax.scatter(valid[x_col], valid[y_col], **scatter_kw)
 
@@ -378,12 +378,12 @@ def plot_ts_diagram(
     has_color_data = use_color in valid.columns
     if kind == "hexbin":
         hb = ax.hexbin(valid[sal_col], valid[temp_col], C=valid[use_color] if has_color_data else None, reduce_C_function=np.mean, gridsize=gridsize, cmap=cmap, mincnt=1)
-        ax.figure.colorbar(hb, ax=ax, label=colorbar_label or use_color if has_color_data else "count")
+        ax.figure.colorbar(hb, ax=ax, label=(colorbar_label or _pretty_label(use_color)) if has_color_data else "Count")
     else:
         scatter_kw = dict(s=marker_size, alpha=alpha, marker=".", edgecolors="none")
         if has_color_data:
             sc = ax.scatter(valid[sal_col], valid[temp_col], c=valid[use_color], cmap=cmap, **scatter_kw)
-            ax.figure.colorbar(sc, ax=ax, label=colorbar_label or use_color)
+            ax.figure.colorbar(sc, ax=ax, label=colorbar_label or _pretty_label(use_color))
         else:
             ax.scatter(valid[sal_col], valid[temp_col], **scatter_kw)
 

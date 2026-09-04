@@ -393,7 +393,7 @@ def count_and_plot_negative_samples(
     param_names: list[str],
     *,
     quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
-    plot_title: str = "Proportion of negative samples per parameter (%)",
+    plot_title: str = "Proportion of negative samples per parameter [%]",
     ax: matplotlib.axes.Axes | None = None,
     save_as: str | None = None,
     dpi: int = 300,
