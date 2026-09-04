@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import os
 import sys
-import pandas as pd
 from dotenv import load_dotenv
 
 import comfort
 from comfort.profile_analysis import (
+    average_duplicate_records_per_profile,
     interpolate_depth_levels,
     mixed_layer_depth,
     profile_completeness,
@@ -27,23 +27,6 @@ from comfort.profile_analysis import (
 from comfort.physics import add_teos10_variables
 
 load_dotenv()
-
-LOC_COLS = ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]
-
-
-def average_duplicates(df: pd.DataFrame, val_col: str) -> pd.DataFrame:
-    """Average duplicate observations at the same (station, profile, depth)."""
-    # Use mean aggregation for the value column
-    agg = {val_col: "mean"}
-
-    # Do not aggregate across location columns
-    for c in LOC_COLS:
-        if c != "LEV_M" and c in df.columns:
-            agg[c] = "first"
-
-    # Grouping and aggregating
-    return df.groupby(["ID", "PROFILE_NUMBER", "LEV_M"], as_index=False).agg(agg)
-
 
 if __name__ == "__main__":
     # Get DB path from .env file
@@ -62,8 +45,8 @@ if __name__ == "__main__":
         )
 
     # Average duplicates
-    df_t = average_duplicates(dfs["TEMPERATURE"], "TEMPERATURE")
-    df_s = average_duplicates(dfs["SALINITY"], "SALINITY")
+    averaged = average_duplicate_records_per_profile(dfs)
+    df_t, df_s = averaged["TEMPERATURE"], averaged["SALINITY"]
 
     # Count profiles (a profile is identified by (ID, PROFILE_NUMBER))
     profile_key = ["ID", "PROFILE_NUMBER"]
