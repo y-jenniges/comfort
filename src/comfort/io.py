@@ -789,25 +789,46 @@ def _read_with_geo(conn, param_name, quality_flags,
         )
         where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-        # Optionally attach T/S for unit conversion (QC filtered)
+        # Optionally attach T/S for unit conversion (QC + space + time filtered)
         ts_select, ts_join = "", ""
-        ts_qc = build_where_clause(quality_flags)
+        ts_params: list = []
         if with_temperature and does_table_exist(conn, "P_TEMPERATURE"):
+            t_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
+            t_params: list = []
+            _append_geo_conditions(
+                t_conditions, t_params, "s2.", "s2.", "t.", "s2.",
+                lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
+            )
+            t_where = ("WHERE " + " AND ".join(t_conditions)) if t_conditions else ""
             ts_select += ", tmp.temperature"
-            ts_join += (f"LEFT JOIN (SELECT ID, LEV_M, AVG(VAL) AS temperature "
-                        f"FROM P_TEMPERATURE {ts_qc} GROUP BY ID, LEV_M) tmp "
+            ts_join += (f"LEFT JOIN (SELECT t.ID, t.LEV_M, AVG(t.VAL) AS temperature "
+                        f"FROM P_TEMPERATURE t JOIN station s2 ON t.ID = s2.ID {t_where} "
+                        f"GROUP BY t.ID, t.LEV_M) tmp "
                         f"ON tmp.ID = p.ID AND tmp.LEV_M = p.LEV_M ")
+            ts_params.extend(t_params)
+
         if with_salinity and does_table_exist(conn, "P_SALINITY"):
+            sal_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
+            sal_params: list = []
+            _append_geo_conditions(
+                sal_conditions, sal_params, "s2.", "s2.", "t.", "s2.",
+                lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
+            )
+            sal_where = ("WHERE " + " AND ".join(sal_conditions)) if sal_conditions else ""
             ts_select += ", sal.salinity"
-            ts_join += (f"LEFT JOIN (SELECT ID, LEV_M, AVG(VAL) AS salinity "
-                        f"FROM P_SALINITY {ts_qc} GROUP BY ID, LEV_M) sal "
+            ts_join += (f"LEFT JOIN (SELECT t.ID, t.LEV_M, AVG(t.VAL) AS salinity "
+                        f"FROM P_SALINITY t JOIN station s2 ON t.ID = s2.ID {sal_where} "
+                        f"GROUP BY t.ID, t.LEV_M) sal "
                         f"ON sal.ID = p.ID AND sal.LEV_M = p.LEV_M ")
+            ts_params.extend(sal_params)
 
         query = (
             f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
             f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME{ts_select} "
             f"FROM P_{param_name.upper()} p JOIN station s ON p.ID = s.ID {ts_join}{where}"
         )
+        # Assemble
+        params = ts_params + params
 
     # Add optional limit to query
     if limit is not None:
