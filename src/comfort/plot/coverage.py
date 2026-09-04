@@ -1,4 +1,5 @@
-"""Sample-count computation and bar-chart plots for COMFORT parameter data."""
+"""Data-coverage and completeness diagnostics, i.e. how much data is there,
+how complete is it (per parameter/year/month)."""
 from __future__ import annotations
 
 import logging
@@ -543,3 +544,37 @@ def detect_and_plot_spatiotemporal_duplicates(
         _save_fig(f"{save_as_prefix}_duplicates_summary.png", dpi)
 
     return df
+
+
+def plot_missing_value_info(
+    num_nulls: pd.DataFrame,
+    *,
+    ax: matplotlib.axes.Axes | None = None,
+    save_as: str | None = None,
+    dpi: int = 300,
+) -> matplotlib.axes.Axes:
+    """Bar chart of missing-value fractions per parameter.
+
+    Args:
+        num_nulls: DataFrame with columns ``'parameter'`` and ``'relative'``.
+        ax: Axes to draw into.
+        save_as: Save path.
+        dpi: Resolution (dots per inch) used when saving.
+
+    Returns:
+        The matplotlib Axes.
+    """
+    ax, standalone = _get_or_create_ax(ax)
+
+    # Bar chart
+    num_nulls.plot(
+        kind="bar", title="Fraction of missing values",
+        x="parameter", y="relative", legend=False,
+        ylabel="%", xlabel="", grid=True, ax=ax,
+    )
+
+    # Percentage labels on each bar
+    for p in ax.patches:
+        ax.annotate(str(round(p.get_height())),
+                     (p.get_x() * 1.01, p.get_height() * 1.01))
+    return _finish(ax, standalone, save_as, dpi)
