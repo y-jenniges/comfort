@@ -77,6 +77,56 @@ def detect_depth_col(df: pd.DataFrame, depth_col: str = "LEV_M") -> str:
     )
 
 
+def average_duplicate_records_per_profile(
+    raw: dict[str, pd.DataFrame],
+    depth_col: str = "LEV_M",
+    profile_col: str | list[str] | None = None,
+    station_cols: list[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Average duplicate records within the same profile at the same depth
+    (e.g. repeated sensor readings within a single cast).
+
+    Args:
+        raw (dict[str, pandas.DataFrame]): Per-parameter DataFrames, as
+            returned by ``load_comfort(as_xarray=False)``.
+        depth_col (str): Column with depth. Default ``"LEV_M"``.
+        profile_col (str or list<str>): Column(s) identifying a profile.
+            Defaults to ``["ID", "PROFILE_NUMBER"]`` when both are present
+            in the first DataFrame, else ``"PROFILE_NUMBER"``.
+        station_cols (list[str]): Station-level metadata columns to keep.
+            Defaults to whichever of ``["LATITUDE", "LONGITUDE", "DATEANDTIME", "LEV_DBAR"]``
+            are present in the first DataFrame.
+    Returns:
+        dict[str, pandas.DataFrame]: One DataFrame per parameter, one row
+            per (profile, depth).
+    """
+    if not raw:
+        return {}
+
+    # Resolve grouping columns from the first parameter's DataFrame
+    first_df = next(iter(raw.values()))
+    profile_col = _resolve_profile_col(first_df, profile_col)
+    group_cols = (profile_col if isinstance(profile_col, list) else [profile_col]) + [depth_col]
+
+    # Station metadata is constant within a group, keep it via "first"
+    if station_cols is None:
+        station_cols = [c for c in ("LATITUDE", "LONGITUDE", "DATEANDTIME", "LEV_DBAR")
+                        if c in first_df.columns]
+
+    # Average each parameter separately
+    averaged = {}
+    for param, df in raw.items():
+        agg = {param: "mean"}
+        for c in station_cols:
+            if c in df.columns and c not in group_cols:
+                agg[c] = "first"
+        avg = df.groupby(group_cols, as_index=False).agg(agg)
+        logging.info("average_duplicate_records_per_profile: %s %d -> %d", param, len(df), len(avg))
+        averaged[param] = avg
+
+    return averaged
+
+
 def vertical_gradient(df: pd.DataFrame,
                       param_col: str = "VAL",
                       depth_col: str = "LEV_M",
