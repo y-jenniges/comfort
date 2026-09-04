@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
+import gsw
 import numpy as np
 import pandas as pd
 
@@ -73,6 +74,49 @@ def distance_to_coast(df: pd.DataFrame, lat_col: str = "LATITUDE",
     dist_km = 2 * _EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
     return pd.Series(dist_km.min(axis=1), index=df.index)
+
+
+def along_track_distance(df: pd.DataFrame, lat_col: str = "LATITUDE",
+                         lon_col: str = "LONGITUDE", order_col: str | None = None) -> pd.Series:
+    """Cumulative great-circle distance along a track [km].
+
+    Collapses to unique ``(lat_col, lon_col)`` stations, orders them by
+    *order_col* (or by first appearance in *df* when ``None``) and sums
+    ``gsw.distance`` between consecutive stations. Rows sharing a station
+    (e.g. different depth levels of one profile) get the same value.
+
+    Args:
+        df (pandas.DataFrame): DataFrame with latitude/longitude columns.
+        lat_col (str): Latitude column [°N].
+        lon_col (str): Longitude column [°E].
+        order_col (str): Column to sort stations by (e.g. ``DATEANDTIME``
+            or ``PROFILE_NUMBER``). Defaults to first-appearance order.
+    Returns:
+        pandas.Series: Cumulative distance [km] from the first station,
+        same index as df.
+    """
+    # Reduce to one row per station, ordered along the track
+    cols = [lat_col, lon_col] if order_col is None else [lat_col, lon_col, order_col]
+    stations = df[cols].drop_duplicates([lat_col, lon_col])
+    if order_col is not None:
+        stations = stations.sort_values(order_col)
+
+    # Great-circle distance between consecutive stations
+    if len(stations) < 2:
+        cum_km = np.zeros(len(stations))
+    else:
+        step_km = gsw.distance(
+            stations[lon_col].values.astype(float), stations[lat_col].values.astype(float)
+        ) / 1000.0
+        cum_km = np.concatenate([[0.0], np.cumsum(step_km)])
+
+    # Broadcast each station's cumulative distance back onto every row
+    # sharing its (lat, lon), e.g. multiple depth levels of one profile
+    lookup = pd.Series(cum_km, index=pd.MultiIndex.from_arrays(
+        [stations[lat_col].values, stations[lon_col].values]
+    ))
+    keys = pd.MultiIndex.from_arrays([df[lat_col].values, df[lon_col].values])
+    return pd.Series(lookup.loc[keys].values, index=df.index)
 
 
 def _get_coast_points(resolution, coastline_geom):
