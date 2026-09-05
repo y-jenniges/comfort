@@ -1163,7 +1163,8 @@ def get_missing_value_info_offline_per_param(mapped_dataframes: list[pd.DataFram
         return pd.DataFrame(columns=np.array(["parameter", "absolute", "relative"]))
 
     # Extract grid
-    grid = mapped_dataframes[0][["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME", "water"]]
+    grid = mapped_dataframes[0][["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME", "water"]].copy()
+    grid["water"] = grid["water"].astype(bool)  # Ensure bool type
     grid = grid[grid["water"]]
 
     # Compute number of null values per mapped table
@@ -1175,7 +1176,8 @@ def get_missing_value_info_offline_per_param(mapped_dataframes: list[pd.DataFram
             [num_nulls, pd.DataFrame([{"parameter": param_col, "complete": num_complete}])],
             ignore_index=True,
         )
-        filled_land = df[~df["water"] & ~df[param_col].isna()]
+        water = df["water"].astype(bool)  # Ensure bool type
+        filled_land = df[~water & ~df[param_col].isna()]
         grid = pd.concat([grid, filled_land[["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]]])
 
     # Assemble missingness info df
