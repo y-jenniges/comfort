@@ -149,7 +149,7 @@ def plot_lat_lon_range(
     return _finish(ax, standalone, save_as, dpi)
 
 
-def plot_missing_value_info_map(
+def plot_parameter_map(
     df_wide: pd.DataFrame,
     param_tables: list[str],
     *,
@@ -158,7 +158,8 @@ def plot_missing_value_info_map(
     savefig_folder: str | None = None,
     dpi: int = 300,
 ) -> None:
-    """Geographic scatter maps of missing values by depth and time slice.
+    """Geographic scatter map(s) of parameter values by depth and time slice.
+    Missing cells are rendered as translucent black.
 
     Args:
         df_wide: Wide table with ``LATITUDE``, ``LONGITUDE``, ``LEV_M``,
@@ -219,7 +220,7 @@ def plot_missing_value_info_map_over_depth(
     relative: bool = True,
     dpi: int = 300,
 ) -> None:
-    """Map of missing-value fraction integrated over the water column.
+    """Geographical map(s) of missingness averaged over depths.
 
     Args:
         df_wide: Wide table with ``LATITUDE``, ``LONGITUDE``, ``LEV_M``,
@@ -269,3 +270,50 @@ def plot_missing_value_info_map_over_depth(
             if savefig_folder:
                 os.makedirs(savefig_folder, exist_ok=True)
                 plt.savefig(f"{savefig_folder}/{param}_time{t.year}.png", dpi=dpi)
+
+
+def plot_missing_value_info_map_joint(
+    df_wide: pd.DataFrame,
+    param_cols: list[str],
+    *,
+    ax: matplotlib.axes.Axes | None = None,
+    save_as: str | None = None,
+    dpi: int = 300,
+) -> matplotlib.axes.Axes:
+    """Geographical map of missingness averaged across parameters, depths and times.
+
+    Args:
+        df_wide: Wide table with ``LATITUDE``, ``LONGITUDE`` and one column
+            per parameter.
+        param_cols: Parameter column names to check jointly.
+        ax: Axes to draw into. Must already use a cartopy projection when
+            passed explicitly. Creates a new PlateCarree figure when ``None``.
+        save_as: Save path.
+        dpi: Resolution (dots per inch) used when saving.
+
+    Returns:
+        The matplotlib Axes.
+    """
+    ccrs, _ = _require_cartopy()
+    ax, standalone = _get_or_create_ax(ax, projection=ccrs.PlateCarree())
+
+    # Compute missingness
+    spatial = df_wide.groupby(["LATITUDE", "LONGITUDE"])[param_cols].apply(
+        lambda g: g.isna().all(axis=1).mean() * 100,
+    ).reset_index(name="pct_missing")
+
+    # Geo plot
+    ax.coastlines()
+    ax.set_global()
+    ax.gridlines(draw_labels=True)
+    sc = ax.scatter(
+        spatial["LONGITUDE"], spatial["LATITUDE"],
+        c=spatial["pct_missing"], cmap="YlOrRd", s=1, marker="s", vmin=0, vmax=100,
+    )
+    ax.figure.colorbar(
+        sc, ax=ax, orientation="horizontal", pad=0.05,
+        label="% rows with all params missing",
+    )
+    ax.set_title("Spatial coverage")
+
+    return _finish(ax, standalone, save_as, dpi)

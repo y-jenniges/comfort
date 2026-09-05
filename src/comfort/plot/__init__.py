@@ -29,7 +29,8 @@ from .distribution import (
 # --- spatial: where is the data, and where is it missing? ---
 from .spatial import (
     plot_lat_lon_range,
-    plot_missing_value_info_map,
+    plot_parameter_map,
+    plot_missing_value_info_map_joint,
     plot_missing_value_info_map_over_depth,
     plot_spatial_distribution,
 )
@@ -46,6 +47,7 @@ from .coverage import (
     detect_and_plot_spatiotemporal_duplicates,
     plot_annual_coverage,
     plot_counts_bar,
+    plot_depth_coverage,
     plot_missing_value_info,
 )
 
@@ -65,7 +67,8 @@ __all__ = [
     # spatial
     "plot_spatial_distribution",
     "plot_lat_lon_range",
-    "plot_missing_value_info_map",
+    "plot_parameter_map",
+    "plot_missing_value_info_map_joint",
     "plot_missing_value_info_map_over_depth",
     # coverage
     "count_samples_over_time",
@@ -74,6 +77,7 @@ __all__ = [
     "count_negative_samples",
     "plot_annual_coverage",
     "plot_counts_bar",
+    "plot_depth_coverage",
     "plot_missing_value_info",
     "count_and_plot_samples_over_time",
     "count_and_plot_samples_per_parameter",

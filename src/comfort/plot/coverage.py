@@ -71,6 +71,51 @@ def plot_annual_coverage(
     return _finish(ax, standalone, save_as, dpi)
 
 
+def plot_depth_coverage(
+    df_wide: pd.DataFrame,
+    param_cols: list[str],
+    *,
+    depth_col: str = "LEV_M",
+    ax: matplotlib.axes.Axes | None = None,
+    save_as: str | None = None,
+    dpi: int = 300,
+) -> matplotlib.axes.Axes:
+    """Line plot of value count per depth level, for multiple parameters.
+
+    Args:
+        df_wide: Wide table with a depth column and one column per parameter.
+        param_cols: Parameter column names to plot.
+        depth_col: Column name containing depth values.
+        ax: Axes to draw into.
+        save_as: Save path.
+        dpi: Resolution (dots per inch) used when saving.
+
+    Returns:
+        The matplotlib Axes.
+    """
+    ax, standalone = _get_or_create_ax(ax)
+
+    # Get sorted depth levels
+    depths = sorted(df_wide[depth_col].dropna().unique())
+
+    # Plot count-vs-depth per parameter
+    for col in param_cols:
+        counts = [df_wide.loc[df_wide[depth_col] == d, col].notna().sum() for d in depths]
+        label = col[2:] if col.startswith("P_") else col
+        label = label.capitalize() if label.isupper() else label
+        ax.plot(counts, depths, marker="o", label=label, markersize=4)
+
+    # Labels and format
+    ax.invert_yaxis()
+    ax.set_xlabel("Number of non-NaN values")
+    ax.set_ylabel("Depth [m]")
+    ax.set_title("Data coverage per depth level")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    return _finish(ax, standalone, save_as, dpi)
+
+
 def count_samples_over_time(
     df: pd.DataFrame,
     date_column: str,
