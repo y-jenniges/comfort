@@ -368,11 +368,16 @@ def plot_ts_diagram(
         # Overlay dashed isopycnal lines
         levels = contour_levels if contour_levels is not None else 12
         cs = ax.contour(si, ti, sigma0, levels=levels, linestyles="dashed", colors="k", alpha=0.5)
-        contour_labels = ax.clabel(cs, inline=True, fontsize=8, fmt="%.1f")
-        # Labels near the edge of the padded grid otherwise get sliced by
-        # the axes border instead of drawn into the surrounding margin
-        for label in contour_labels:
-            label.set_clip_on(False)
+
+        # Place each density label at the midpoint of its line's longest segment
+        manual_positions = []
+        for seg_list in cs.allsegs:
+            segs = [seg for seg in seg_list if len(seg) > 0]
+            if not segs:
+                continue
+            longest = max(segs, key=len)
+            manual_positions.append(tuple(longest[len(longest) // 2]))
+        ax.clabel(cs, inline=True, fontsize=8, fmt="%.1f", manual=manual_positions)
 
     # Plot observations on top of the contours
     has_color_data = use_color in valid.columns
