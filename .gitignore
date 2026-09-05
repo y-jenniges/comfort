@@ -34,10 +34,14 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 
-# Data files (not part of the source package)
+# Data files
 *.sqlite
 *.nc
 *.csv
+
+# Folders
+output/
+paper/
 
 # Misc
 *.bak
