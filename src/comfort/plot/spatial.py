@@ -4,10 +4,10 @@ from __future__ import annotations
 import logging
 import os
 from typing import TYPE_CHECKING
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib import cm
 from scipy import stats
 
 from ..qc import build_where_clause
@@ -96,7 +96,7 @@ def plot_spatial_distribution(
     ax.gridlines(draw_labels=True)
     image = ax.pcolormesh(
         lonbins, latbins, hist.statistic,
-        cmap=plt.cm.get_cmap(cmap, 64), shading="flat",
+        cmap=plt.colormaps[cmap].resampled(64), shading="flat",
         transform=ccrs.PlateCarree(),
     )
     ax.figure.colorbar(
@@ -178,8 +178,7 @@ def plot_missing_value_info_map(
     times = times or list(df_wide["DATEANDTIME"].value_counts().index)
 
     # NaN bins rendered as translucent black
-    cmap = cm.get_cmap("viridis").copy()
-    cmap.set_bad("black", alpha=0.2)
+    cmap = plt.colormaps["viridis"].with_extremes(bad=mcolors.to_rgba("black", alpha=0.2))
 
     # One map per parameter x time x depth combination
     for param in param_tables:
@@ -237,7 +236,7 @@ def plot_missing_value_info_map_over_depth(
     times = times or list(df_wide["DATEANDTIME"].value_counts().index)
 
     # Colour settings
-    cmap = cm.get_cmap("viridis")
+    cmap = plt.colormaps["viridis"]
     norm = plt.Normalize(0, 100)
 
     for param in param_tables:
