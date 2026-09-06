@@ -193,4 +193,4 @@ class TestDBParamScaler:
     def test_validate_identifier_rejects_bad_name(self, db_conn):
         scaler = DBParamScaler(db_conn)
         with pytest.raises(ValueError, match="Invalid SQL identifier"):
-            scaler.get_min_max("DROP TABLE foo;", "VAL")
+            scaler.get_min_max("DROP TABLE foo; --", "VAL")
