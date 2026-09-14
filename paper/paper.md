@@ -67,11 +67,10 @@ To our knowledge, no existing package offers a comparable reproducible interface
 
 ## Software design
 The organisation of the `comfort-db` library is driven by usability and the scale of the COMFORT database. Since the database
-is distributed as a single multi-gigabyte SQLite file, efficiency and low memory load were key design goals to enable 
-execution on modest hardware. For example, space, time and quality filtering is applied on SQL level rather than after loading 
-potentially large data tables into memory and computations were vectorised where possible, for example `distance_to_coast` 
-and `classify_from_grid` functions use a KDTree for candidate search combined with vectorised distance calculations to avoid
-per-row iterations.
+is distributed as a single multi-gigabyte SQLite file, efficiency and low memory load were key design goals. 
+For example, space, time and quality filtering is applied on SQL level rather than after loading potentially large data tables into memory and 
+computations were vectorised where possible, for example `distance_to_coast` and `classify_from_grid` functions use a 
+KDTree for candidate search combined with vectorised distance calculations to avoid per-row iterations.
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
 that corrections and settings apply everywhere consistently. 
