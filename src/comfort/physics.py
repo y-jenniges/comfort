@@ -1,4 +1,10 @@
-"""TEOS-10 physical oceanography functions for COMFORT data."""
+"""TEOS-10 physical oceanography functions for COMFORT data.
+
+Conversions are computed using the `gsw` library, the Python implementation of the
+TEOS-10 Gibbs Seawater Oceanographic Toolbox (McDougall, T., & Barker, P. (2011).
+Getting started with TEOS-10 and the Gibbs Seawater (GSW) Oceanographic Toolbox. SCOR/IAPSO WG127).
+
+"""
 from __future__ import annotations
 
 import logging
