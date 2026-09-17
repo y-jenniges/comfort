@@ -10,6 +10,7 @@ import gsw
 import numpy as np
 import pandas as pd
 
+from .physics import convert_salinity, convert_temperature
 from .util.sqlite_utils import validate_identifier
 
 
@@ -349,12 +350,14 @@ class ConversionFormulas:
 
     def percent_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
                                     use_density: bool = False) -> pd.DataFrame:
-        """Convert % saturation to umol/kg using oxygen saturation formula.
+        """Convert % saturation to umol/kg using TEOS-10 oxygen solubility.
 
         Requires co-located temperature and salinity columns (any casing).
-        Rows without them get NaN and are handled by the caller's on_missing policy.
+        Potential temperature is computed from co-located pressure/latitude/longitude
+        when available (see :meth:`_potential_temperature_for_o2sol`), otherwise falls
+        back to in-situ temperature as an approximation.
         """
-        logging.debug("percent -> micromolPerKilogram (oxygen saturation formula)")
+        logging.debug("percent -> micromolPerKilogram (gsw.O2sol_SP_pt)")
         temp = df.copy()
         sal_col = _get_column(df, "SALINITY")
         temp_col = _get_column(df, "TEMPERATURE")
@@ -366,8 +369,27 @@ class ConversionFormulas:
             return temp.assign(VAL=np.nan, UNITS_ID=3)
 
         # Unit conversion
-        o2_sat = oxygen_saturation(df[sal_col], df[temp_col])
-        return temp.assign(VAL=temp["VAL"] * np.asarray(o2_sat) / 100, UNITS_ID=3)
+        pt = self._potential_temperature_for_o2sol(df, sal_col, temp_col)
+        o2_eq = gsw.O2sol_SP_pt(df[sal_col].to_numpy(dtype=float), pt)
+        return temp.assign(VAL=temp["VAL"] * np.asarray(o2_eq) / 100, UNITS_ID=3)
+
+    def _potential_temperature_for_o2sol(self, df: pd.DataFrame, sal_col: str,
+                                         temp_col: str) -> np.ndarray:
+        """Helper function to compute potential temperature (pt0) for oxygen solubility.
+        Falls back to in-situ temperature when pressure/latitude/longitude are unavailable.
+        """
+        pressure_col = _get_column(df, "LEV_DBAR") or _get_column(df, "LEV_M")
+        lat_col = _get_column(df, "LATITUDE")
+        lon_col = _get_column(df, "LONGITUDE")
+        if pressure_col is None or lat_col is None or lon_col is None:
+            logging.warning("percent -> micromolPerKilogram: pressure/latitude/longitude "
+                            "missing. Using in-situ temperature as an approximation to "
+                            "potential temperature")
+            return df[temp_col].to_numpy(dtype=float)
+
+        sa = convert_salinity(df[sal_col], df[pressure_col], df[lon_col], df[lat_col])
+        pt = convert_temperature(df[temp_col], sa.to_numpy(), df[pressure_col], to="pt0")
+        return pt.to_numpy()
 
     def lab_density(self, df: pd.DataFrame, use_density: bool) -> float | pd.Series:
         """Density at sample salinity, T = 22 °C, atmospheric pressure [kg/L].
