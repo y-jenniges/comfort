@@ -167,8 +167,10 @@ def compute_buoyancy_frequency(df: pd.DataFrame, sa_col: str, ct_col: str,
 
         # N2 is computed at mid-depth pressure levels between consecutive pairs
         n2, p_mid = gsw.Nsquared(
-            valid[sa_col].values, valid[ct_col].values,
-            valid[pressure_col].values, lat=lat,
+            SA=valid[sa_col].values,
+            CT=valid[ct_col].values,
+            p=valid[pressure_col].values,
+            lat=lat,
         )
         for val, pmid in zip(n2, p_mid):
             rows.append({profile_col: pid, "pressure_mid": float(pmid), "N2": float(val)})
@@ -208,6 +210,23 @@ def compute_spiciness(sa: float | np.ndarray | pd.Series,
     raise ValueError(
         f"reference_pressure must be 0 or 2000; got {reference_pressure}"
     )
+
+
+def compute_aou(oxygen: float | np.ndarray | pd.Series,
+                sp: float | np.ndarray | pd.Series,
+                pt: float | np.ndarray | pd.Series) -> pd.Series:
+    """Compute Apparent Oxygen Utilization (AOU), i.e. the difference between
+    how much oxygen the water could hold and the actual oxygen concentration.
+
+    Args:
+        oxygen (array-like): Observed dissolved oxygen concentration [umol/kg].
+        sp (array-like): Practical Salinity.
+        pt (array-like): Potential temperature referenced to 0 dbar [°C].
+    Returns:
+        pandas.Series: AOU [umol/kg].
+    """
+    o2_eq = gsw.O2sol_SP_pt(_to1d(sp), _to1d(pt))
+    return pd.Series(o2_eq - _to1d(oxygen))
 
 
 def add_teos10_variables(df: pd.DataFrame, sp_col: str, t_col: str,
