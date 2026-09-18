@@ -3,14 +3,15 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-import numpy as np
 import pandas as pd
 
 from ._helpers import _finish, _get_or_create_ax, _pretty_label, _resolve_data
+from ..sections import bin_section
 
 if TYPE_CHECKING:
     import sqlite3
     import matplotlib.axes
+    from numpy.typing import ArrayLike
     from ..qc import QCFilter
 
 logger = logging.getLogger(__name__)
@@ -137,8 +138,8 @@ def plot_section(
         cmap: str = "viridis",
         clim: tuple[float, float] | None = None,
         binned: bool = False,
-        along_bins: int = 60,
-        depth_bins: int = 40,
+        along_bins: int | ArrayLike = 60,
+        depth_bins: int | ArrayLike = 40,
         conn: sqlite3.Connection | None = None,
         parameter: str | None = None,
         quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
@@ -173,11 +174,14 @@ def plot_section(
         param_label: Colour-bar label. Defaults to *param_col*.
         cmap: Matplotlib colormap name.
         clim: Colour limits ``(vmin, vmax)``.
-        binned: When ``True``, bin *along_col* and *depth_col* into a
-            (along_bins x depth_bins) grid, average *param_col* within each
-            cell and draw a ``pcolormesh`` instead of a raw scatter
-        along_bins: Number of along-axis bins when *binned* is ``True``.
-        depth_bins: Number of depth bins when *binned* is ``True``.
+        binned: If ``True``, bin *along_col* and *depth_col* into a
+            (along_bins x depth_bins) grid via :func:`~comfort.sections.bin_section`,
+            average *param_col* within each cell and draw a ``pcolormesh``
+            instead of a raw scatter. Default is False.
+        along_bins: Number of along-axis bins, or explicit bin edges, when
+            *binned* is ``True``.
+        depth_bins: Number of depth bins, or explicit bin edges, when
+            *binned* is ``True``.
         conn: Database connection (alternative to *df*).
         parameter: Parameter name without ``P_`` prefix.
         quality_flags: QC filters when reading parameters.
@@ -216,17 +220,13 @@ def plot_section(
 
     if binned:
         # Average onto an (along-bin, depth-bin) grid
-        along_bin = pd.cut(plot_df[along_col], bins=along_bins)
-        depth_bin = pd.cut(plot_df[depth_col], bins=depth_bins)
-        grid = (
-            plot_df.assign(_along_bin=along_bin, _depth_bin=depth_bin)
-            .groupby(["_along_bin", "_depth_bin"], observed=False)[param_col]
-            .mean()
-            .unstack("_depth_bin")
-        )
-        along_centers = np.array([iv.mid for iv in grid.index])
-        depth_vals = np.array([iv.mid for iv in grid.columns])
-        mesh = ax.pcolormesh(along_centers, depth_vals, grid.T.values, cmap=cmap, shading="nearest")
+        section = bin_section(plot_df, param_col=param_col, depth_col=depth_col, along_col=along_col,
+                              along_bins=along_bins, depth_bins=depth_bins)
+        pivot = section.pivot(index=along_col, columns=depth_col, values=param_col)
+        pivot = pivot.sort_index(axis=0).sort_index(axis=1)
+        along_centers = pivot.index.values
+        depth_vals = pivot.columns.values
+        mesh = ax.pcolormesh(along_centers, depth_vals, pivot.T.values, cmap=cmap, shading="nearest")
         if clim:
             mesh.set_clim(*clim)
         ax.figure.colorbar(mesh, ax=ax, label=param_label or param_col)
