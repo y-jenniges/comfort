@@ -17,6 +17,8 @@ There can be multiple profiles at the same station, though in the COMFORT databa
 
 [1] Korablev, A., Olsen, A., Geophysical Institute, University of Bergen, Bjerknes Centre for Climate Research (2022). COMFORT Dataset [Data set]. NIRD RDA. https://doi.org/10.11582/2022.00039
 
+[2] McDougall, T., & Barker, P. (2011). Getting started with TEOS-10 and the Gibbs Seawater (GSW) Oceanographic Toolbox. SCOR/IAPSO WG127
+
 ---
 
 ## Installation
@@ -111,6 +113,8 @@ pytest
 ## Citing
 
 If you use `comfort-db` in published work, please cite the COMFORT dataset [1] and this library.
+TEOS-10 physical oceanography (`comfort.physics`) is computed via the [`gsw`](https://github.com/TEOS-10/GSW-Python) 
+library - please also cite [2]. 
 
 ## License
 
