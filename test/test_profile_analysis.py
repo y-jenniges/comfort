@@ -309,6 +309,34 @@ class TestInterpolateDepthLevels:
         assert not (result["LEV_DBAR"] == 0).any()
         assert not (result["LEV_DBAR"] == 200).any()
 
+    # A target depth bracketed by two measurements further apart than max_gap is dropped
+    def test_max_gap_drops_wide_bracket(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1],
+                           "LEV_DBAR": [0.0, 500.0], "VAL": [10.0, 0.0]})
+        result = interpolate_depth_levels(df, target_depths=[250], max_gap=100)
+        assert result.empty
+
+    # The same target depth is kept when the bracket is within max_gap
+    def test_max_gap_keeps_narrow_bracket(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1],
+                           "LEV_DBAR": [200.0, 300.0], "VAL": [10.0, 8.0]})
+        result = interpolate_depth_levels(df, target_depths=[250], max_gap=100)
+        assert len(result) == 1
+
+    # A target depth that exactly matches a measured depth is always kept
+    def test_max_gap_keeps_exact_match(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1],
+                           "LEV_DBAR": [0.0, 500.0], "VAL": [10.0, 0.0]})
+        result = interpolate_depth_levels(df, target_depths=[0, 500], max_gap=1)
+        assert len(result) == 2
+
+    # max_gap=None (default) applies no filtering
+    def test_max_gap_none_by_default(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1],
+                           "LEV_DBAR": [0.0, 500.0], "VAL": [10.0, 0.0]})
+        result = interpolate_depth_levels(df, target_depths=[250])
+        assert len(result) == 1
+
 
 class TestDetectParamCol:
     # A single non-standard value column (e.g. NITRATE) is auto-detected

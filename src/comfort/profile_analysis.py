@@ -358,11 +358,30 @@ def pycnocline_depth(df: pd.DataFrame,
     return pd.DataFrame(rows)
 
 
+def _bracket_gap(z: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Distance between the two measured depths bracketing each target depth."""
+    # Get upper bracket/depth level index (max. is the last depth level)
+    idx = np.clip(np.searchsorted(z, targets, side="left"), 0, len(z) - 1)
+
+    # Target depths that coincide with a depth level
+    exact = np.isclose(z[idx], targets)
+
+    # Avoid idx_hi going negative (if idx is 0)
+    idx_hi = np.maximum(idx, 1)
+
+    # Bracket widths/distance between the two depth levels
+    gap = z[idx_hi] - z[idx_hi - 1]
+
+    # Return bracket widths (or zero for exact matches)
+    return np.where(exact, 0.0, gap)
+
+
 def interpolate_depth_levels(df: pd.DataFrame,
                              target_depths: ArrayLike,
                              param_col: str = "VAL",
                              depth_col: str = "LEV_M",
-                             profile_col: str | list[str] | None = None
+                             profile_col: str | list[str] | None = None,
+                             max_gap: float | None = None,
                              ) -> pd.DataFrame:
     """Linearly interpolate profiles onto standardised depth levels. Only depth
     levels within the measured range are returned. Profiles with <2 valid
@@ -376,6 +395,10 @@ def interpolate_depth_levels(df: pd.DataFrame,
         profile_col (str or list<str>): Column(s) identifying individual profiles.
             Defaults to ``["ID", "PROFILE_NUMBER"]`` when both exist, else
             ``"PROFILE_NUMBER"``.
+        max_gap (float): Maximum allowed distance [m] between the two
+            measured depths bracketing a target depth. Target depths whose
+            bracket is wider than this are dropped.
+            ``None`` (default) disables the check.
     Returns:
         pandas.DataFrame: DataFrame with one row per profile and target depth.
     """
@@ -409,6 +432,14 @@ def interpolate_depth_levels(df: pd.DataFrame,
         # Interpolate depths
         depths_sel = target_depths[in_range]
         vals_interp = np.interp(depths_sel, z, v)
+
+        # Drop targets whose measurements are too far apart
+        if max_gap is not None:
+            keep = _bracket_gap(z, depths_sel) <= max_gap
+            depths_sel = depths_sel[keep]
+            vals_interp = vals_interp[keep]
+            if len(depths_sel) == 0:
+                continue
 
         # Build a DataFrame chunk for this profile
         chunk = pd.DataFrame({depth_col: depths_sel, param_col: vals_interp})
