@@ -15,6 +15,7 @@ Welcome to comfort-db Library's documentation!
    profile_analysis
    physics
    geo
+   sections
    units
    scaling
    gridding
