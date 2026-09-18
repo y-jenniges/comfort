@@ -383,7 +383,7 @@ class ConversionFormulas:
         lon_col = _get_column(df, "LONGITUDE")
         if pressure_col is None or lat_col is None or lon_col is None:
             logging.warning("percent -> micromolPerKilogram: pressure/latitude/longitude "
-                            "missing. Using in-situ temperature as an approximation to "
+                            "missing, using in-situ temperature as an approximation to "
                             "potential temperature")
             return df[temp_col].to_numpy(dtype=float)
 
