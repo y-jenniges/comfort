@@ -93,7 +93,7 @@ will support future analyses of the dataset such as [@jenniges2027] (example 8).
 ## AI usage disclosure
 Generative AI (Anthropic Claude, via Claude Code) was used under direct supervision of the corresponding author (Y. Jenniges) 
 to re-structure the author's own pre-existing analysis scripts into an installable package, 
-update accompanying documentation, draft the majority of the unit/integration tests and 
+update accompanying documentation, draft the majority of the tests and 
 assisted in identifying and fixing bugs. 
 All code was reviewed by the corresponding author, who implemented the original scientific logic. 
 Correctness was verified via the tests, checks against manually computed
