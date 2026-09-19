@@ -682,7 +682,7 @@ class TestOnlineWideTableFunctions:
 @pytest.mark.needs_bathymetry
 @pytest.mark.skipif(not _has_xarray, reason="xarray not installed ([grid] extra)")
 class TestGridManagerWithBathymetry:
-    # Full round-trip against a real bathymetry file: create, look up, load, remove a grid
+    # Full round-trip against a real bathymetry file: Create, look up, load, remove a grid
     def test_create_and_retrieve_grid(self, tmp_path):
         bathymetry = os.environ.get("BATHYMETRY_PATH")
         db_copy = str(tmp_path / "test.sqlite")
