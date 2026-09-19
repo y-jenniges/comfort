@@ -97,7 +97,7 @@ update accompanying documentation, draft the majority of the tests and
 assisted in identifying and fixing bugs. 
 All code was reviewed by the corresponding author, who implemented the original scientific logic. 
 Correctness was verified via the tests, checks against manually computed
-unit conversions (`test/test_files.xlsx`) and execution of all example scripts. 
+unit conversions and execution of all example scripts. 
 
 ## Acknowledgements
 The physical oceanography calculations of `comfort-db` rely on the `gsw` library [@mcdougall2011], 
