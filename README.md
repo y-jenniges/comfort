@@ -99,12 +99,11 @@ Runnable scripts (partly self-contained, partly requiring the database) covering
 ## Testing
 
 ```bash
-# Unit tests only (no database needed)
 pip install -e ".[dev]"
-pytest  
+pytest
 
-# Include integration tests (needs COMFORT database)
-export COMFORT_DB_PATH=/path/to/comfort.sqlite
+# Include the bathymetry round-trip test (needs a GEBCO NetCDF file)
+export BATHYMETRY_PATH=/path/to/gebco_bathymetry.nc
 pytest
 ```
 
