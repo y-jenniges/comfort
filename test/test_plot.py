@@ -121,6 +121,20 @@ class TestPlotProfile:
         ax = plot_profile(df, profiles=[9999])
         assert ax is None
 
+    # show_points=True (default) marks each measurement on the profile line
+    def test_show_points_default_adds_markers(self, demo_conn):
+        df = comfort.io.read_parameter(demo_conn, "TEMPERATURE")
+        ax = plot_profile(df, profiles=[0])
+        assert ax.lines[0].get_marker() != "None"
+        plt.close()
+
+    # show_points=False draws a plain line with no markers
+    def test_show_points_false_draws_no_markers(self, demo_conn):
+        df = comfort.io.read_parameter(demo_conn, "TEMPERATURE")
+        ax = plot_profile(df, profiles=[0], show_points=False)
+        assert ax.lines[0].get_marker() == "None"
+        plt.close()
+
     # Section plot works when loading straight from the database
     def test_section_from_database(self, demo_conn):
         ax = plot_section(conn=demo_conn, parameter="OXYGEN")
