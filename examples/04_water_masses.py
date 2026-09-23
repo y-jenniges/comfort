@@ -1,5 +1,5 @@
-"""Water-mass classification, distance to coast and province assignment
-from ``comfort.geo``.
+"""Water-mass classification and characterisation, distance to coast and
+province assignment from ``comfort.geo``.
 
 Requires:
     COMFORT_DB_PATH - path to the COMFORT SQLite database
@@ -27,6 +27,7 @@ from comfort.geo import (
     water_mass_masks,
     water_mass_statistics,
 )
+from comfort.physics import add_teos10_variables, compute_spiciness
 
 load_dotenv()
 
@@ -36,13 +37,14 @@ if __name__ == "__main__":
     if not db_path:
         sys.exit("COMFORT_DB_PATH is not set. Point it to your COMFORT SQLite database.")
 
-    # Load nitrate with spatial metadata
-    print("Loading NITRATE (QC_GOOD, North Atlantic)...")
+    # Load nitrate, temperature and salinity with spatial metadata
+    print("Loading NITRATE, TEMPERATURE, SALINITY (QC_GOOD, North Atlantic)...")
     with comfort.connect(db_path) as conn:
         dfs = comfort.load_comfort(
-            conn, parameters=["NITRATE"],
+            conn, parameters=["NITRATE", "TEMPERATURE", "SALINITY"],
             quality_flags=comfort.QC_GOOD,
-            lat_min=20, lat_max=65, lon_min=-80, lon_max=0,
+            lat_min=20, lat_max=65,
+            lon_min=-80, lon_max=0,
             depth_max=100,
             as_xarray=False,
             convert_units=True,
@@ -50,18 +52,34 @@ if __name__ == "__main__":
     df = dfs["NITRATE"]
     print(f"  {len(df)} rows, {df['PROFILE_NUMBER'].nunique()} profiles\n")
 
+    # --- Adding density (sigma0) and spiciness info ---
+    print("=== add_teos10_variables + compute_spiciness ===")
+    averaged = comfort.average_duplicate_locations(dfs)
+    loc_cols = ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"]
+    df_wm = (averaged["TEMPERATURE"]
+             .merge(averaged["SALINITY"], on=loc_cols)
+             .merge(averaged["NITRATE"], on=loc_cols))
+    df_wm = add_teos10_variables(
+        df_wm, sp_col="SALINITY", t_col="TEMPERATURE", pressure_col="LEV_DBAR",
+    )  # adds sigma0
+    df_wm["spiciness0"] = compute_spiciness(df_wm["SA"], df_wm["CT"])  # adds spiciness
+    print(df_wm[["SALINITY", "TEMPERATURE", "sigma0", "spiciness0"]]
+          .head(5).to_string(index=False), "\n")
+
     # --- Water-mass classification with user-defined regions ---
     print("=== water_mass_masks (user-defined regions) ===")
     regions = {
         "Subpolar": [(-60, 45), (0, 45), (0, 65), (-60, 65)],
         "Subtropical": [(-80, 20), (0, 20), (0, 44), (-80, 44)],
     }
-    df_m = water_mass_masks(df, regions)
+    df_m = water_mass_masks(df_wm, regions)
     print(df_m["region"].value_counts().to_string(), "\n")
 
     # Per-region statistics
     print("=== water_mass_statistics ===")
-    stats = water_mass_statistics(df_m, param_cols=["NITRATE"])
+    stats = water_mass_statistics(
+        df_m, param_cols=["NITRATE", "TEMPERATURE", "SALINITY", "sigma0", "spiciness0"],
+    )
     print(stats.to_string(), "\n")
 
     # --- Distance to coast ---
@@ -82,8 +100,13 @@ if __name__ == "__main__":
         print(gdf[["province_code", "province_name"]].head(10)
               .to_string(index=False), "\n")
 
-        df_lh = water_mass_masks(df, gdf, region_name_col="province_code")
-        print(df_lh["region"].value_counts().head(10).to_string())
+        df_lh = water_mass_masks(df_wm, gdf, region_name_col="province_code")
+        print(df_lh["region"].value_counts().head(10).to_string(), "\n")
+
+        stats_lh = water_mass_statistics(
+            df_lh, param_cols=["NITRATE", "TEMPERATURE", "SALINITY", "sigma0", "spiciness0"],
+        )
+        print(stats_lh.head(10).to_string())
     else:
         print("Skipped - set LONGHURST_SHP_PATH to the Longhurst .shp file to run.")
 
@@ -95,7 +118,13 @@ if __name__ == "__main__":
         print(f"Loaded {len(grid)} grid cells at depth "
               f"{grid['LEV_M'].iloc[0]:.0f} m\n")
 
-        df_j = classify_from_grid(df, grid)
-        print(df_j["label"].value_counts().head(10).to_string())
+        df_j = classify_from_grid(df_wm, grid)
+        print(df_j["label"].value_counts().head(10).to_string(), "\n")
+
+        stats_j = water_mass_statistics(
+            df_j, param_cols=["NITRATE", "TEMPERATURE", "SALINITY", "sigma0", "spiciness0"],
+            region_col="label",
+        )
+        print(stats_j.head(10).to_string())
     else:
         print("Skipped - set JENNIGES_CSV_PATH to cluster_set.csv to run.")
