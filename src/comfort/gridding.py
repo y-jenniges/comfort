@@ -19,6 +19,16 @@ from .database.information import does_table_exist, get_table_as_df, get_names_o
 from .database.structure import remove_tables_like
 
 
+def _param_table_name(name: str) -> str:
+    """Normalise a parameter name to its P_* table name.
+
+    Matches the ``f"P_{param_name.upper()}"`` convention used by
+    ``io.read_parameter``/``load_comfort``, so callers can pass either
+    ``"NITRATE"`` or ``"P_NITRATE"``.
+    """
+    return name if name.upper().startswith("P_") else f"P_{name.upper()}"
+
+
 class _BaseGrid:
     """Shared grid logic for Grid and SpaceGrid."""
 
@@ -718,7 +728,10 @@ class Grid(_BaseGrid):
 
         Args:
             connection (sqlite3.Connection): Connection to the database.
-            param_tables (list[str]): Tables to map. None maps all parameter tables.
+            param_tables (list[str]): Parameter names to map, e.g. "NITRATE" or
+                "P_NITRATE" (both accepted). None maps all parameter tables.
+                LATITUDE/LONGITUDE/DATEANDTIME are read from the matching E_*
+                extended view when one exists, otherwise joined from station.
             replace_existing (bool): Replace already-mapped tables without prompting. Default is False.
             include_z_max (bool): Include the maximum depth value. Default is True.
         Returns:
@@ -734,7 +747,8 @@ class Grid(_BaseGrid):
 
         mapped_tables = []
         for table in param_tables:
-            # Validate table name
+            # Normalise to the P_* table name and validate it
+            table = _param_table_name(table)
             validate_identifier(table)
 
             # Check if table already exists
@@ -749,26 +763,44 @@ class Grid(_BaseGrid):
             elif existing:
                 connection.execute(f"DROP TABLE {table}_{self.grid_id};")
 
-            # Build SQL query to retrieve table data
+            # Build SQL query to get table data
+            # For LATITUTE/LONGITUDE/DATEANDTIME data, try the E_* extended view first
+            # Fallback to a join with STATION
             z_eq = "<=" if include_z_max else "<"
-            q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, VAL, "
-                 f"strftime('%Y-%m-%d %H:%M:%S', DATEANDTIME) AS DATEANDTIME "
-                 f"FROM {table} WHERE "
-                 f"LATITUDE >= ? AND LATITUDE <= ? AND "
-                 f"LONGITUDE >= ? AND LONGITUDE <= ? AND "
-                 f"LEV_M >= ? AND LEV_M {z_eq} ? AND "
-                 f"DATEANDTIME >= ? AND DATEANDTIME <= ?")
-            bind = [self.lat_min, self.lat_max, self.lon_min, self.lon_max,
-                    self.z_min, self.z_max,
+            view = f"E_{table[2:]}" if table.startswith("P_") else None
+            if view:
+                validate_identifier(view)
+            if view and does_table_exist(connection, view, "view"):
+                q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, VAL, "
+                     f"strftime('%Y-%m-%d %H:%M:%S', DATEANDTIME) AS DATEANDTIME "
+                     f"FROM {view} WHERE "
+                     f"LATITUDE >= ? AND LATITUDE <= ? AND "
+                     f"LONGITUDE >= ? AND LONGITUDE <= ? AND "
+                     f"LEV_M >= ? AND LEV_M {z_eq} ? AND "
+                     f"DATEANDTIME >= ? AND DATEANDTIME <= ?")
+            else:
+                q = (f"SELECT s.LATITUDE, s.LONGITUDE, p.LEV_M, p.VAL, "
+                     f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
+                     f"FROM {table} p LEFT JOIN station s ON p.ID = s.ID WHERE "
+                     f"s.LATITUDE >= ? AND s.LATITUDE <= ? AND "
+                     f"s.LONGITUDE >= ? AND s.LONGITUDE <= ? AND "
+                     f"p.LEV_M >= ? AND p.LEV_M {z_eq} ? AND "
+                     f"s.DATEANDTIME >= ? AND s.DATEANDTIME <= ?")
+            # Convert to native Python types
+            bind = [float(self.lat_min), float(self.lat_max),
+                    float(self.lon_min), float(self.lon_max),
+                    float(self.z_min), float(self.z_max),
                     str(self.time_min), str(self.time_max)]
             logging.debug(q)
 
             # Fetch data as df
             cur = connection.execute(q, bind)
             df = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
+            logging.info(f"  {table}: fetched {len(df)} rows")
 
             # Bin onto grid cells and time steps, aggregating (mean, median, std, count)
             df_grouped = self.bin(df, "VAL", agg=["mean", "median", "std", "count"])
+            logging.info(f"  {table}: binned to {len(df_grouped)} occupied cells")
 
             grid_name = f"grid_{self.grid_id}"
             # Add grid to database (if not yet included)
@@ -1068,13 +1100,17 @@ def create_wide_table_online(connection: sqlite3.Connection, grid_id: int,
     Args:
         connection (sqlite3.Connection): Connection to the database.
         grid_id: Grid ID whose mapped parameter tables should be joined.
-        param_tables (list[str]): Parameter table names. None uses all parameter tables.
+        param_tables (list[str]): Parameter names, e.g. "NITRATE" or "P_NITRATE"
+            (both accepted). None uses all parameter tables.
     Returns:
         str: Name of the created wide table.
     """
     # If no parameter tables are specified, use all
     if not param_tables:
         param_tables = get_names_of_all_parameter_tables(connection)
+    param_tables = [_param_table_name(p) for p in param_tables]
+    for p in param_tables:
+        validate_identifier(p)
 
     # Define SQL query parts
     vals = ", ".join([f"{p}_{grid_id}.{p}" for p in param_tables])
@@ -1115,11 +1151,15 @@ def get_missing_value_info_per_param(connection: sqlite3.Connection, wide_table_
     Args:
         connection (sqlite3.Connection): Connection to the database.
         wide_table_name (str): Name of the wide table.
-        param_tables (list[str]): Parameter column names.
+        param_tables (list[str]): Parameter names, e.g. "NITRATE" or "P_NITRATE"
+            (both accepted) - must match the wide table's column names.
     Returns:
         pandas.DataFrame with columns 'parameter', 'total', 'relative'.
     """
     # Define SQL query parts
+    param_tables = [_param_table_name(p) for p in param_tables]
+    for p in param_tables:
+        validate_identifier(p)
     water_or_any = " or ".join(f"{p} is not null" for p in param_tables)
     all_not_null = " and ".join(f"{p} is not null" for p in param_tables)
 
@@ -1203,7 +1243,7 @@ def get_missing_value_info_offline(df_wide: pd.DataFrame) -> pd.DataFrame:
     rows = [{"parameter": p, "absolute": df_wide[p].isna().sum()} for p in param_tables]
     num_nulls = pd.DataFrame(rows)
 
-    # Compute relative missinngess
+    # Compute relative missingness
     num_grid_cells = len(df_wide)
     if num_grid_cells == 0:
         num_nulls["relative"] = 0.0
