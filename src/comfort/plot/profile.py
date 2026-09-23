@@ -29,6 +29,7 @@ def plot_profile(
         depth_label: str = "Depth [m]",
         depth_markers: pd.DataFrame | None = None,
         depth_marker_col: str = "MLD_m",
+        show_points: bool = True,
         conn: sqlite3.Connection | None = None,
         parameter: str | None = None,
         quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
@@ -59,6 +60,8 @@ def plot_profile(
             the same colour as the profile line.
         depth_marker_col: Column in *depth_markers* holding the depth value,
             e.g. ``"MLD_m"`` or ``"pycnocline_depth_m"``.
+        show_points: Mark each actual measurement on the profile line.
+            Default ``True``.
         conn: Database connection (alternative to *df*).
         parameter: Parameter name without ``P_`` prefix.
         quality_flags: QC filters forwarded to the reader.
@@ -101,7 +104,8 @@ def plot_profile(
     for key, group in df.groupby(group_cols):
         group = group.sort_values(depth_col)
         label = "-".join(str(k) for k in key) if isinstance(key, tuple) else str(key)
-        line, = ax.plot(group[param_col], group[depth_col], alpha=0.7, label=label)
+        marker_kw = dict(marker="o", markersize=3, markeredgewidth=0) if show_points else {}
+        line, = ax.plot(group[param_col], group[depth_col], alpha=0.7, label=label, **marker_kw)
 
         if marker_lookup is not None and key in marker_lookup.index:
             depth_val = marker_lookup.loc[key]
