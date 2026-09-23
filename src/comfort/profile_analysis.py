@@ -236,8 +236,8 @@ def mixed_layer_depth(df: pd.DataFrame,
     109, C12003. https://doi.org/10.1029/2004JC002378).
 
     MLD is the depth where density (or temperature) first differs from its reference value by
-    more than the threshold. If the threshold is never exceeded, ``MLD_m`` is set
-    to the maximum measured depth and ``threshold_exceeded`` is ``False``.
+    more than the threshold. If the threshold is never exceeded within the profile,
+    there is no valid MLD and ``MLD_m`` is ``NaN``.
 
     Args:
         df (pandas.DataFrame): Input DataFrame with density or
@@ -256,7 +256,8 @@ def mixed_layer_depth(df: pd.DataFrame,
             Default 10.0m.
     Returns:
         pandas.DataFrame: One row per profile with columns
-            [profile_col, ``'MLD_m'``, ``'threshold_exceeded'``].
+            [profile_col, ``'MLD_m'``] (``NaN`` when the threshold is never
+            exceeded).
     """
     # Get column names
     if density_col is None and temp_col is None:
@@ -286,8 +287,7 @@ def mixed_layer_depth(df: pd.DataFrame,
         v_ref = v[ref_idx]
 
         # Walk downward until threshold is exceeded
-        mld = float(z[-1])
-        exceeded = False
+        mld = np.nan
         for i in range(ref_idx + 1, len(z)):
             # Threshold test for density/temperature
             if abs(v[i] - v_ref) > delta:
@@ -296,11 +296,9 @@ def mixed_layer_depth(df: pd.DataFrame,
 
                 # Linear interpolation to estimate exact crossing depth
                 mld = float(z[i - 1] + (target - v[i - 1]) * (z[i] - z[i - 1]) / (v[i] - v[i - 1]))
-
-                exceeded = True
                 break
 
-        rows.append({**_profile_key_dict(profile_col, pid), "MLD_m": mld, "threshold_exceeded": exceeded})
+        rows.append({**_profile_key_dict(profile_col, pid), "MLD_m": mld})
 
     return pd.DataFrame(rows)
 
@@ -312,8 +310,10 @@ def pycnocline_depth(df: pd.DataFrame,
                      min_gradient: float = 0.0
                      ) -> pd.DataFrame:
     """Find the depth of maximum density gradient (pycnocline depth).
-    Pass ``min_gradient`` and check the ``significant`` column fo filter
-    out weak pycnoclines.
+
+    Pass ``min_gradient`` to require a minimum strength: Profiles whose
+    maximum gradient falls short have no valid pycnocline and get
+    ``pycnocline_depth_m = NaN``.
 
     Args:
         df (pandas.DataFrame): Input DataFrame with density and depth columns.
@@ -326,8 +326,9 @@ def pycnocline_depth(df: pd.DataFrame,
             considered a pycnocline. Default 0.0 (no filtering).
     Returns:
         pandas.DataFrame: One row per profile with columns
-            [profile_col, ``'pycnocline_depth_m'``, ``'max_gradient'``,
-            ``'significant'``].
+            [profile_col, ``'pycnocline_depth_m'``, ``'max_gradient'``].
+            ``pycnocline_depth_m`` is ``NaN`` when the maximum gradient is
+            below ``min_gradient``.
     """
     profile_col = _resolve_profile_col(df, profile_col)
     depth_col = detect_depth_col(df, depth_col)
@@ -348,11 +349,11 @@ def pycnocline_depth(df: pd.DataFrame,
         grad = np.gradient(rho, z)
         idx = int(np.argmax(np.abs(grad)))
 
+        significant = abs(grad[idx]) >= min_gradient
         rows.append({
             **_profile_key_dict(profile_col, pid),
-            "pycnocline_depth_m": float(z[idx]),
+            "pycnocline_depth_m": float(z[idx]) if significant else np.nan,
             "max_gradient": float(grad[idx]),
-            "significant": bool(abs(grad[idx]) >= min_gradient),
         })
 
     return pd.DataFrame(rows)
@@ -382,8 +383,9 @@ def interpolate_depth_levels(df: pd.DataFrame,
                              depth_col: str = "LEV_M",
                              profile_col: str | list[str] | None = None,
                              max_gap: float | None = None,
+                             method: str = "pchip",
                              ) -> pd.DataFrame:
-    """Linearly interpolate profiles onto standardised depth levels. Only depth
+    """Interpolate profiles onto standardised depth levels. Only depth
     levels within the measured range are returned. Profiles with <2 valid
     measurements are skipped.
 
@@ -399,9 +401,18 @@ def interpolate_depth_levels(df: pd.DataFrame,
             measured depths bracketing a target depth. Target depths whose
             bracket is wider than this are dropped.
             ``None`` (default) disables the check.
+        method (str): Interpolation method: ``"pchip"`` (default) is a
+            piecewise cubic Hermite interpolant (smoother
+            than linear, no overshoot between measured levels), ``"linear"``
+            is piecewise-linear interpolation.
     Returns:
         pandas.DataFrame: DataFrame with one row per profile and target depth.
+    Raises:
+        ValueError: If ``method`` is not ``'pchip'`` or ``'linear'``.
     """
+    if method not in ("pchip", "linear"):
+        raise ValueError(f"Unknown method {method!r}; choose 'pchip' or 'linear'")
+
     profile_col = _resolve_profile_col(df, profile_col)
     param_col = _detect_param_col(df, param_col)
     depth_col = detect_depth_col(df, depth_col)
@@ -415,8 +426,8 @@ def interpolate_depth_levels(df: pd.DataFrame,
     # Interpolate each profile
     chunks = []
     for pid, group in df.groupby(profile_col):
-        # Drop nan values
-        valid = group[[depth_col, param_col]].dropna().sort_values(depth_col)
+        # Drop nans and duplicate depths (both interpolants need strictly increasing x)
+        valid = group[[depth_col, param_col]].dropna().drop_duplicates(subset=depth_col).sort_values(depth_col)
         if len(valid) < 2:
             logging.debug("interpolate_depth_levels: profile %s has < 2 valid levels, skipped", pid)
             continue
@@ -431,7 +442,11 @@ def interpolate_depth_levels(df: pd.DataFrame,
 
         # Interpolate depths
         depths_sel = target_depths[in_range]
-        vals_interp = np.interp(depths_sel, z, v)
+        if method == "pchip":
+            from scipy.interpolate import PchipInterpolator
+            vals_interp = PchipInterpolator(z, v, extrapolate=False)(depths_sel)
+        else:
+            vals_interp = np.interp(depths_sel, z, v)
 
         # Drop targets whose measurements are too far apart
         if max_gap is not None:
