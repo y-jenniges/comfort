@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.abspath('../../src'))
 
 # -- Project information -----------------------------------------------------
 
-project = 'COMFORT Library'
+project = 'comfort-db'
 copyright = '2026, Yvonne Jenniges'
 author = 'Yvonne Jenniges'
 
