@@ -115,7 +115,8 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
                    lon_min: float | None = None, lon_max: float | None = None,
                    depth_min: float | None = None, depth_max: float | None = None,
                    date_min: str | None = None, date_max: str | None = None,
-                   limit: int | None = None) -> pd.DataFrame:
+                   limit: int | None = None,
+                   extra_station_cols: list[str] | None = None) -> pd.DataFrame:
     """Read a P_* parameter table as a DataFrame with optional QC filtering.
 
     ``station`` table is always joined, so ``LATITUDE``, ``LONGITUDE``
@@ -137,11 +138,15 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
         date_max (str or datetime-like): End date (inclusive).
         limit (int): Maximum number of rows to return. ``None`` returns all.
             Useful as a safeguard for large tables.
+        extra_station_cols (list[str]): Additional ``station`` columns to
+            include (e.g. ``["CRUISE_ID", "ST_NUMBER_ORIGIN"]``).
     Returns:
         pandas.DataFrame
     """
-    # Validate identifier
+    # Validate identifiers
     validate_identifier(param_name)
+    for col in extra_station_cols or []:
+        validate_identifier(col)
 
     # Build query with geo, profile and quality filters
     params: list = []
@@ -156,8 +161,9 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
         depth_min, depth_max, date_min, date_max,
     )
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    extra_select = "".join(f", s.{col}" for col in (extra_station_cols or []))
     sql = (
-        f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
+        f"SELECT p.*, s.LATITUDE, s.LONGITUDE{extra_select}, "
         f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
         f"FROM P_{param_name.upper()} p "
         f"LEFT JOIN station s ON p.ID = s.ID {where}"
@@ -457,6 +463,8 @@ def load_comfort(
         depth_min: float | None = None, depth_max: float | None = None,
         date_min: str | None = None, date_max: str | None = None,
         target_depths: np.ndarray | list[float] | None = None,
+        max_gap: float | None = None,
+        interp_method: str = "pchip",
         as_xarray: bool = True,
         normalise_columns: bool = False,
         convert_units: bool = False,
@@ -470,8 +478,9 @@ def load_comfort(
     so only the requested rows are loaded into memory. Tries E_* views first
     and falls back to ``P_* JOIN station``.
 
-    For xarray output each parameter is interpolated onto ``target_depths``
-    (default: WOD standard levels) with dimensions ``(profile, depth)``.
+    If *target_depths* is specified, the profiles are interpolated onto
+    those depths using the specified interpolation method *interp_method*
+    and a maximum gap between depth *max_gap*.
 
     Args:
         db_path_or_conn (str, Path or sqlite3.Connection): Path to the COMFORT
@@ -490,8 +499,17 @@ def load_comfort(
         depth_max (float): Maximum depth [m].
         date_min (str or datetime-like): Start date (inclusive).
         date_max (str or datetime-like): End date (inclusive).
-        target_depths (array-like): Depth levels [m] for interpolation.
-            Defaults to :data:`DEPTH_INTERVALS`.
+        target_depths (array-like): Depth levels [m] to interpolate onto.
+            ``None`` (default) skips interpolation.
+        max_gap (float): Maximum allowed distance [m] between the two
+            measured depths bracketing a target depth, forwarded to
+            :func:`~comfort.profile_analysis.interpolate_depth_levels`.
+            ``None`` (default) disables the check. Ignored when
+            *target_depths* is ``None``.
+        interp_method (str): Depth-interpolation method forwarded to
+            :func:`~comfort.profile_analysis.interpolate_depth_levels`:
+            ``"pchip"`` (default) or ``"linear"``. Ignored when
+            *target_depths* is ``None``.
         as_xarray (bool): ``True`` returns ``xr.Dataset``, ``False`` returns
             ``dict[param_name, pandas.DataFrame]``.
         normalise_columns (bool): When ``True`` and ``as_xarray=False``,
@@ -514,6 +532,10 @@ def load_comfort(
         xarray.Dataset or dict[str, pandas.DataFrame].
         For the dict path each DataFrame has the measurement column named
         after the parameter (e.g. ``"NITRATE"``), not ``"VAL"``.
+        For the scattered xarray path (``as_xarray=True,
+        target_depths=None``), each parameter's coordinates are prefixed
+        with its name (e.g. ``NITRATE_depth``, ``NITRATE_latitude``) since
+        different parameters have independent observation dimensions.
     """
     # Collect geo/temporal filter arguments
     geo_kwargs = dict(
@@ -630,18 +652,26 @@ def load_comfort(
             return xr.Dataset()
         return {}
 
-    # Return raw DataFrames if xarray not requested
+    # target_depths=None: Return each profile at its native measured depths
+    if target_depths is None:
+        if not as_xarray:
+            return dfs
+        return _build_scattered_dataset(
+            dfs, _instrument_map, _platform_map, _units_map, _station_platform, _param_unit_ids,
+        )
+
+    # target_depths given: Project every parameter onto it
+    depths = np.asarray(target_depths, dtype=float)
+    interp_dfs = {
+        param: interpolate_depth_levels(df, depths, param_col=param, depth_col="LEV_M",
+                                        max_gap=max_gap, method=interp_method)
+        for param, df in dfs.items()
+    }
     if not as_xarray:
-        return dfs
+        return interp_dfs
 
-    # Build xarray Dataset with dims (profile, depth)
+    # Build xarray Dataset with a shared (profile, depth) grid
     import xarray as xr
-
-    # Target depth levels for interpolation
-    depths = np.asarray(
-        target_depths if target_depths is not None else DEPTH_INTERVALS,
-        dtype=float,
-    )
 
     # Collect unique (station_id, profile_number) pairs as canonical profile identities
     all_profiles = sorted(
@@ -674,10 +704,9 @@ def load_comfort(
                     "platform_id": _station_platform.get(sid, -1),
                 }
 
-    # Interpolate each parameter onto target depth levels
+    # Pivot each parameter's interpolated values onto the shared grid
     data_vars = {}
-    for param, df in dfs.items():
-        interp = interpolate_depth_levels(df, depths, param_col=param, depth_col="LEV_M")
+    for param, interp in interp_dfs.items():
         if interp.empty:
             arr = np.full((n_profiles, n_depths), np.nan)
         else:
@@ -751,6 +780,73 @@ def load_comfort(
     ds["depth"].attrs.update({"units": "m", "positive": "down"})
     ds["latitude"].attrs["units"] = "degrees_north"
     ds["longitude"].attrs["units"] = "degrees_east"
+    return ds
+
+
+def _build_scattered_dataset(dfs, instrument_map, platform_map, units_map,
+                             station_platform, param_unit_ids):
+    """Build an xr.Dataset with each parameter on its own observation
+    dimension, at native measured depths (no interpolation, no shared grid).
+
+    Different parameters have independent numbers of observations at
+    independent depths, so they need independent dimensions. Therefore,
+    each parameter's coordinates are namespaced with its own name (e.g. ``NITRATE_depth``).
+    """
+    import xarray as xr
+
+    data_vars = {}
+    coords = {}
+    for param, df in dfs.items():
+        dim = f"{param}_obs"
+        n = len(df)
+        data_vars[param] = (dim, df[param].to_numpy(dtype=float))
+
+        # Define coordinates
+        coords[f"{param}_depth"] = (dim, df["LEV_M"].to_numpy(dtype=float))
+        coords[f"{param}_latitude"] = (dim, df["LATITUDE"].to_numpy(dtype=float))
+        coords[f"{param}_longitude"] = (dim, df["LONGITUDE"].to_numpy(dtype=float))
+        try:
+            times = pd.to_datetime(df["DATEANDTIME"]).to_numpy()
+        except Exception:
+            times = df["DATEANDTIME"].to_numpy(dtype=object)
+        coords[f"{param}_time"] = (dim, times)
+
+        # Get station IDs and profile numbers
+        station_ids = df["ID"].to_numpy(dtype=int)
+        coords[f"{param}_station_id"] = (dim, station_ids)
+        coords[f"{param}_profile_number"] = (dim, df["PROFILE_NUMBER"].to_numpy(dtype=int))
+
+        # Get instrument IDs
+        instrument_ids = df["INSTRUMENT_ID"].to_numpy(dtype=int) if "INSTRUMENT_ID" in df.columns else np.full(n, -1)
+        coords[f"{param}_instrument"] = (
+            dim, np.array([instrument_map.get(int(i), str(int(i))) for i in instrument_ids])
+        )
+
+        # Get platform IDs
+        platform_ids = np.array([station_platform.get(int(sid), -1) for sid in station_ids])
+        coords[f"{param}_platform"] = (
+            dim, np.array([platform_map.get(int(p), str(int(p))) for p in platform_ids])
+        )
+
+    ds = xr.Dataset(data_vars, coords=coords)
+
+    # Attach resolved unit names as variable attributes
+    for param in dfs:
+        uid_set = param_unit_ids.get(param, set())
+        if len(uid_set) == 1:
+            uid = next(iter(uid_set))
+            ds[param].attrs["units"] = units_map.get(int(uid), str(int(uid)))
+        elif len(uid_set) > 1:
+            ds[param].attrs["units"] = " / ".join(
+                units_map.get(int(u), str(int(u))) for u in sorted(uid_set)
+            )
+
+    # Metadata per parameter
+    for param in dfs:
+        ds[f"{param}_depth"].attrs.update({"units": "m", "positive": "down"})
+        ds[f"{param}_latitude"].attrs["units"] = "degrees_north"
+        ds[f"{param}_longitude"].attrs["units"] = "degrees_east"
+
     return ds
 
 
