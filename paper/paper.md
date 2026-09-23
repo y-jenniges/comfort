@@ -43,7 +43,7 @@ in the Baltic, Black and Arabian Sea [@paulmier2009].*
 
 ## Summary
 `comfort-db` is a Python library that facilitates working with the COMFORT SQLite database [@comfort_dataset2022]. 
-The database assembles global oceanographic measurements from ten datasets and contains a total of 458,724,734 in-situ measurements from the years 1772 to 2020 [@comfort_report2021]. 
+The database assembles global oceanographic measurements from ten datasets and contains a total of 458,724,734 in-situ measurements from the years 1772 to 2020.
 `comfort-db` enables easy access to the database and provides preprocessing and exploratory analysis utilities. 
 Preprocessing supports variable scaling and filtering for space, time and quality. 
 Unit conversions are implemented following [@comfort_report2021] and can easily be added during data loading or separately via a converter object. 
@@ -84,11 +84,18 @@ Quality filtering, TEOS-10 conversion and unit harmonisation was applied and
 the data was then rendered as a global temperature-salinity diagram coloured by oxygen concentration.
 
 ## Research impact statement
-Many publications have already benefitted from the COMFORT database
-**TODO** (a list of publications can be found at https://comfort.w.uib.no/scientific-publications/)**
-highlighting the relevance of the data. 
-`comfort-db` can be used to reproduce e.g. [@jenniges2025] (example 7) and 
-will support future analyses of the dataset such as [@jenniges2027] (example 8).
+The COMFORT dataset provides a large compilation of oceanographic observations, including data from 
+established resources such as the World Ocean Database [@boyer2018] and the Global Ocean Data Analysis Project [@olsen2016; @olsen2019].
+Accessing, preprocessing and exploring this data can require substantial technical effort and 
+`comfort-db` lowers the barrier to exploit this extensive resource to facilitate future analyses and reproducible 
+workflows. 
+
+To this point, [@jenniges2025] is the only published study using the COMFORT database and investigated three-dimensional
+biogeochemical provinces in the North Atlantic. The upcoming [@jenniges2027] will apply the data to spatio-temporal imputation 
+of North Atlantic biogeochemistry at 20-year intervals. The preprocessing of both studies can be closely reproduced
+using `comfort-db` (examples 7 and 8, respectively), with minor numerical differences from refinements to the
+density conventions since the original analyses.
+
 
 ## AI usage disclosure
 Generative AI (Anthropic Claude, via Claude Code) was used under direct supervision of the corresponding author (Y. Jenniges) 
@@ -100,7 +107,7 @@ Correctness was verified via the tests, checks against manually computed
 unit conversions and execution of all example scripts. 
 
 ## Acknowledgements
-The physical oceanography calculations of `comfort-db` rely on the `gsw` library [@mcdougall2011], 
-the Python implementation of the TEOS-10 Gibbs Seawater Oceanographic Toolbox.
-
-**TODO** MarDATA and University Bremen funding. 
+The first author (Y. Jenniges) was funded through the University of Bremen and 
+the Helmholtz School for Marine Data Science (MarDATA).
+This work has been kindly supported by computing infrastructure of 
+the Alfred-Wegener Institut, Helmholtz-Zentrum für Polar- und Meeresforschung. 
