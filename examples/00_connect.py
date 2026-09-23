@@ -37,7 +37,8 @@ with comfort.connect(DB_PATH) as conn:
 
     # Get basic info about given parameters
     summary = comfort.describe_variables(
-        conn, parameters=["NITRATE", "OXYGEN", "TEMPERATURE"], quality_flags=QC_GOOD,
+        conn, parameters=["NITRATE", "DIC", "C13"],
+        quality_flags=QC_GOOD,
     )
     print("--- Variable summary (QC_GOOD) ---")
     print(summary.to_string(index=False), "\n")
@@ -46,7 +47,7 @@ with comfort.connect(DB_PATH) as conn:
 # Load parameters of interest (filtered for quality, spatial and temporal extent)
 dfs = comfort.load_comfort(
     DB_PATH,
-    parameters=["NITRATE", "OXYGEN"],
+    parameters=["NITRATE", "DIC"],
     quality_flags=QC_GOOD,
     lat_min=30, lat_max=70,
     date_min="2000-01-01",

@@ -21,7 +21,7 @@ if __name__ == "__main__":
         sys.exit("COMFORT_DB_PATH is not set. Point it to your COMFORT SQLite database.")
 
     with comfort.connect(db_path) as conn:
-        # Quick database overview
+        # Database overview (taking a few minutes)
         print("=== info ===")
         comfort.info(conn)
         print()
@@ -29,7 +29,7 @@ if __name__ == "__main__":
         # Detailed variable summary with QC filtering
         print("=== describe_variables ===")
         summary = comfort.describe_variables(conn,
-                                             parameters=["NITRATE", "OXYGEN"],
+                                             parameters=["NITRATE", "DIC"],
                                              quality_flags=comfort.QC_GOOD
                                              )
         print(summary.to_string(index=False), "\n")
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         print("=== load_comfort (dict output) ===")
         dfs = comfort.load_comfort(
             conn,
-            parameters=["NITRATE", "OXYGEN"],
+            parameters=["NITRATE", "DIC"],
             quality_flags=comfort.QC_GOOD,
             as_xarray=False,
         )
@@ -50,7 +50,7 @@ if __name__ == "__main__":
         print("=== load_comfort (xarray output) ===")
         ds = comfort.load_comfort(
             conn,
-            parameters=["NITRATE", "OXYGEN"],
+            parameters=["NITRATE", "DIC"],
             quality_flags=comfort.QC_GOOD,
             as_xarray=True,
         )
