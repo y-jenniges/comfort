@@ -97,7 +97,6 @@ of North Atlantic biogeochemistry at 20-year intervals. The preprocessing of bot
 using `comfort-db` (examples 9 and 10, respectively), with minor numerical differences from refinements to the
 density conventions since the original analyses.
 
-
 ## AI usage disclosure
 Generative AI (Anthropic Claude, via Claude Code) was used under direct supervision of the corresponding author (Y. Jenniges) 
 to re-structure the author's own pre-existing analysis scripts into an installable package, 
