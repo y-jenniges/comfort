@@ -184,6 +184,29 @@ def compute_buoyancy_frequency(df: pd.DataFrame, sa_col: str, ct_col: str,
     return pd.DataFrame(rows)
 
 
+def compute_potential_vorticity(n2: float | np.ndarray | pd.Series,
+                                latitude: float | np.ndarray | pd.Series) -> pd.Series:
+    """Compute the planetary (linear) potential vorticity PV = f * N2 / g.
+
+    This is Ertel's potential vorticity theorem with relative vorticity
+    neglected as e.g. used in Johnson, G. C., 2006: Generation and Initial
+    Evolution of a Mode Water θ–S Anomaly. J. Phys. Oceanogr., 36, 739–751,
+    https://doi.org/10.1175/JPO2895.1.
+
+    Args:
+        n2 (array-like): Buoyancy frequency squared [1/s2], e.g. from
+            :func:`compute_buoyancy_frequency`.
+        latitude (array-like): Latitude [°N]. Broadcast against *n2*,
+            e.g. pass the same latitude for every level of one profile.
+    Returns:
+        pandas.Series: Potential vorticity [1/(m s)].
+    """
+    lat_ = _to1d(latitude)
+    f = gsw.f(lat_)  # Coriolis parameter
+    g = gsw.grav(lat_, np.zeros_like(lat_))  # Gravitational acceleration
+    return pd.Series(f * _to1d(n2) / g)
+
+
 def compute_spiciness(sa: float | np.ndarray | pd.Series,
                       ct: float | np.ndarray | pd.Series,
                       reference_pressure: int = 0) -> pd.Series:

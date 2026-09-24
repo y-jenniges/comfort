@@ -9,6 +9,7 @@ from comfort.physics import (
     compute_aou,
     compute_buoyancy_frequency,
     compute_density,
+    compute_potential_vorticity,
     compute_spiciness,
     convert_salinity,
     convert_temperature,
@@ -152,6 +153,53 @@ class TestComputeBuoyancyFrequency:
         df = self._stable_df().drop(columns="LATITUDE")
         result = compute_buoyancy_frequency(df, "SA", "CT")
         assert len(result) == 2
+
+
+class TestComputePotentialVorticity:
+    # Output is a pandas Series
+    def test_returns_series(self):
+        assert isinstance(compute_potential_vorticity(1e-4, 45.0), pd.Series)
+
+    # A scalar input yields a length-1 Series
+    def test_scalar_gives_length_one(self):
+        assert len(compute_potential_vorticity(1e-4, 45.0)) == 1
+
+    # Array-like inputs are converted element-wise
+    def test_array_input(self):
+        result = compute_potential_vorticity(np.array([1e-4, 2e-4]), np.array([45.0, 45.0]))
+        assert len(result) == 2
+
+    # Northern Hemisphere (f > 0): Stable stratification (N2 > 0) gives positive PV
+    def test_positive_in_northern_hemisphere(self):
+        assert float(compute_potential_vorticity(1e-4, 45.0).iloc[0]) > 0
+
+    # Southern Hemisphere (f < 0) flips the sign of PV for the same N2
+    def test_negative_in_southern_hemisphere(self):
+        assert float(compute_potential_vorticity(1e-4, -45.0).iloc[0]) < 0
+
+    # At the equator f = 0, so PV vanishes regardless of stratification
+    def test_zero_at_equator(self):
+        assert float(compute_potential_vorticity(1e-4, 0.0).iloc[0]) == pytest.approx(0.0, abs=1e-15)
+
+    # PV scales linearly with N2 at fixed latitude
+    def test_scales_linearly_with_n2(self):
+        pv_1x = compute_potential_vorticity(1e-4, 45.0).iloc[0]
+        pv_2x = compute_potential_vorticity(2e-4, 45.0).iloc[0]
+        assert float(pv_2x) == pytest.approx(2 * float(pv_1x))
+
+    # Composes with compute_buoyancy_frequency's N2 output (the intended pipeline)
+    def test_composes_with_buoyancy_frequency(self):
+        df = pd.DataFrame({
+            "PROFILE_NUMBER": [1, 1, 1],
+            "LEV_DBAR": [0.0, 100.0, 200.0],
+            "SA": [34.0, 34.5, 35.0],
+            "CT": [20.0, 15.0, 10.0],
+            "LATITUDE": [30.0, 30.0, 30.0],
+        })
+        n2_result = compute_buoyancy_frequency(df, "SA", "CT")
+        pv = compute_potential_vorticity(n2_result["N2"], 30.0)
+        assert len(pv) == len(n2_result)
+        assert (pv > 0).all()  # stable stratification, Northern Hemisphere
 
 
 class TestComputeSpiciness:
