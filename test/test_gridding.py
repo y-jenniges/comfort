@@ -591,13 +591,16 @@ class TestOnlineWideTableFunctions:
     @staticmethod
     def _mapped_conn():
         conn = sqlite3.connect(":memory:")
-        conn.execute(
-            "CREATE TABLE P_NITRATE (LATITUDE REAL, LONGITUDE REAL, LEV_M REAL, "
-            "VAL REAL, DATEANDTIME TEXT)"
-        )
-        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?,?,?)", [
-            (1.0, 1.0, 10.0, 5.0, "2000-03-01 00:00:00"),
-            (6.0, 6.0, 60.0, 9.0, "2000-06-01 00:00:00"),
+        # Create dummy station and nitrate tables
+        conn.execute("CREATE TABLE station (ID INTEGER, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)")
+        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_M REAL, VAL REAL)")
+        conn.executemany("INSERT INTO station VALUES (?,?,?,?)", [
+            (1, 1.0, 1.0, "2000-03-01 00:00:00"),
+            (2, 6.0, 6.0, "2000-06-01 00:00:00"),
+        ])
+        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?)", [
+            (1, 10.0, 5.0),
+            (2, 60.0, 9.0),
         ])
         conn.commit()
 
@@ -613,6 +616,85 @@ class TestOnlineWideTableFunctions:
         conn = self._mapped_conn()
         assert does_table_exist(conn, "grid_999", "table")
         assert does_table_exist(conn, "P_NITRATE_999", "table")
+
+    # When an E_* extended view exists, map_tables reads LATITUDE/LONGITUDE/ DATEANDTIME from it
+    # instead of joining station (no station table here to do the join)
+    def test_map_tables_uses_extended_view_when_present(self):
+        # Create dummy nitrate table and view
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_M REAL, VAL REAL)")
+        conn.execute(
+            "CREATE VIEW E_NITRATE AS SELECT 9.0 AS LATITUDE, 9.0 AS LONGITUDE, "
+            "LEV_M, VAL, '2000-03-01 00:00:00' AS DATEANDTIME FROM P_NITRATE"
+        )
+        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?)", [(1, 10.0, 5.0)])
+        conn.commit()
+
+        grid = _make_grid_stub()
+        grid.grid_id = 998
+        grid.grid_name = "grid_998"
+        grid.time_min = "2000-01-01 00:00:00"
+        grid.map_tables(conn, param_tables=["P_NITRATE"])
+
+        df = get_table_as_df(conn, "P_NITRATE_998")
+        cell = df[df["P_NITRATE"].notna()]
+        assert len(cell) == 1
+        assert cell["LATITUDE"].iloc[0] == pytest.approx(7.5)  # 9.0 snaps to the 5-10 cell centre
+
+    # Bare parameter names ("NITRATE") are accepted everywhere "P_NITRATE" is
+    def test_bare_parameter_name_accepted_everywhere(self):
+        # Create dummy station and nitrate tables
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            "CREATE TABLE station (ID INTEGER, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)"
+        )
+        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_M REAL, VAL REAL)")
+        conn.executemany("INSERT INTO station VALUES (?,?,?,?)", [(1, 1.0, 1.0, "2000-03-01 00:00:00")])
+        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?)", [(1, 10.0, 5.0)])
+        conn.commit()
+
+        # Gridding and map_tables
+        grid = _make_grid_stub()
+        grid.grid_id = 997
+        grid.grid_name = "grid_997"
+        grid.time_min = "2000-01-01 00:00:00"
+        mapped = grid.map_tables(conn, param_tables=["NITRATE"])  # bare parameter name
+        assert mapped == ["P_NITRATE_997"]
+        assert does_table_exist(conn, "P_NITRATE_997", "table")
+
+        # create_wide_tale_online
+        wide_name = create_wide_table_online(conn, 997, param_tables=["NITRATE"]) # bare parameter name
+        df_wide = get_table_as_df(conn, wide_name)
+        assert "P_NITRATE" in df_wide.columns
+
+        # get_missing_value_info_per_param
+        coverage = get_missing_value_info_per_param(conn, wide_name, ["NITRATE"]) # bare parameter name
+        assert "P_NITRATE" in coverage["parameter"].values
+
+    # map_tables casts every bind value to a native Python type
+    def test_map_tables_handles_numpy_int64_bounds(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            "CREATE TABLE station (ID INTEGER, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)"
+        )
+        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_M REAL, VAL REAL)")
+        conn.executemany("INSERT INTO station VALUES (?,?,?,?)", [(1, 1.0, 1.0, "2000-03-01 00:00:00")])
+        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?)", [(1, 10.0, 5.0)])
+        conn.commit()
+
+        # Grid spec
+        grid = _make_grid_stub()
+        grid.grid_id = 996
+        grid.grid_name = "grid_996"
+        grid.time_min = "2000-01-01 00:00:00"
+        grid.z_min = np.array([0, 50, 100], dtype=np.int64).min()
+        grid.z_max = np.array([0, 50, 100], dtype=np.int64).max()
+        assert isinstance(grid.z_min, np.int64) and isinstance(grid.z_max, np.int64)  # check if type in grid is correct
+
+        # Map parameter table onto grid (should work with correct types)
+        grid.map_tables(conn, param_tables=["P_NITRATE"])
+        df = get_table_as_df(conn, "P_NITRATE_996")
+        assert df["P_NITRATE"].notna().sum() == 1
 
     # The wide table joins the grid template with each mapped parameter table on idx
     def test_create_wide_table_online(self):
