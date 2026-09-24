@@ -344,6 +344,21 @@ class TestLoadComfort:
         assert "NITRATE" in result["NITRATE"].columns
         assert "VAL" not in result["NITRATE"].columns
 
+    # target_depths=None (default) keeps each profile's native measured depths
+    def test_dict_no_target_depths_keeps_native_depths(self, comfort_db):
+        result = load_comfort(comfort_db, parameters=["NITRATE"], as_xarray=False)
+        assert set(result["NITRATE"]["LEV_M"].unique()) == {0.0, 100.0, 200.0}
+
+    # Passing target_depths maps dict output onto it instead
+    def test_dict_target_depths_regularises_depths(self, comfort_db):
+        result = load_comfort(comfort_db, parameters=["NITRATE"], as_xarray=False, target_depths=[0, 50, 100, 150, 200])
+        assert set(result["NITRATE"]["LEV_M"].unique()) == {0.0, 50.0, 100.0, 150.0, 200.0}
+
+    # max_gap/interp_method are forwarded to the interpolation when target_depths is given
+    def test_dict_target_depths_respects_max_gap(self, comfort_db):
+        result = load_comfort(comfort_db, parameters=["NITRATE"], as_xarray=False, target_depths=[50], max_gap=50)
+        assert result["NITRATE"].empty
+
     # normalise_columns=True lower-cases every column name
     def test_normalise_columns(self, comfort_db):
         result = load_comfort(comfort_db, as_xarray=False, normalise_columns=True)
@@ -385,7 +400,7 @@ class TestLoadComfort:
         result = load_comfort(comfort_db, target_depths=[0, 100, 200])
         assert "NITRATE" in result.data_vars
 
-    # Dataset dims are always (profile, depth)
+    # Dataset dims are (profile, depth) when target_depths is given
     def test_xarray_dims(self, comfort_db):
         pytest.importorskip("xarray")
         result = load_comfort(comfort_db, target_depths=[0, 100, 200])
@@ -397,14 +412,14 @@ class TestLoadComfort:
         result = load_comfort(comfort_db, target_depths=[0, 100, 200])
         np.testing.assert_array_equal(result["depth"].values, [0.0, 100.0, 200.0])
 
-    # Latitude/longitude are exposed as coordinates, not data variables
+    # Latitude/longitude are exposed as coordinates, not data variables, when target_depths is given
     def test_xarray_geo_coords(self, comfort_db):
         pytest.importorskip("xarray")
         result = load_comfort(comfort_db, target_depths=[0, 100, 200])
         assert "latitude" in result.coords
         assert "longitude" in result.coords
 
-    # Station/instrument/platform metadata are also exposed as coordinates
+    # Station/instrument/platform metadata are also exposed as coordinates when target_depths is given
     def test_xarray_station_instrument_platform_coords(self, comfort_db):
         pytest.importorskip("xarray")
         result = load_comfort(comfort_db, target_depths=[0, 100, 200])
@@ -414,6 +429,48 @@ class TestLoadComfort:
         assert "platform" in result.coords
         assert set(result["station_id"].values) == {1, 2}
         assert set(result["instrument"].values) == {"1", "2"}
+
+    # Default (target_depths=None) exposes each parameter on its own
+    # observation dimension, namespaced coordinates, native measured depths
+    def test_xarray_scattered_by_default(self, comfort_db):
+        pytest.importorskip("xarray")
+        result = load_comfort(comfort_db, parameters=["NITRATE"])
+        assert "NITRATE_obs" in result.dims
+        assert "profile" not in result.dims
+        np.testing.assert_array_equal(sorted(result["NITRATE_depth"].values), [0.0, 0.0, 100.0, 100.0, 200.0, 200.0])
+        assert set(result["NITRATE_station_id"].values) == {1, 2}
+
+    # Each parameter gets its own independent observation dimension
+    def test_xarray_scattered_independent_dims_per_parameter(self, comfort_db):
+        pytest.importorskip("xarray")
+        result = load_comfort(comfort_db, parameters=["NITRATE", "OXYGEN"])
+        assert result.sizes["NITRATE_obs"] == 6
+        assert result.sizes["OXYGEN_obs"] == 4
+
+    # max_gap is forwarded to interpolate_depth_levels
+    def test_max_gap_drops_wide_bracket(self, comfort_db):
+        pytest.importorskip("xarray")
+        result = load_comfort(comfort_db, parameters=["NITRATE"], target_depths=[50], max_gap=50)
+        assert np.isnan(result["NITRATE"].values).all()
+
+    # A looser max_gap keeps the same target depth
+    def test_max_gap_keeps_narrow_bracket(self, comfort_db):
+        pytest.importorskip("xarray")
+        result = load_comfort(comfort_db, parameters=["NITRATE"], target_depths=[50], max_gap=150)
+        assert not np.isnan(result["NITRATE"].values).all()
+
+    # max_gap/interp_method, i.e. interpolation is not applied when target_depths is None (default)
+    def test_max_gap_ignored_without_target_depths(self, comfort_db):
+        pytest.importorskip("xarray")
+        result = load_comfort(comfort_db, parameters=["NITRATE"], max_gap=0, interp_method="bogus")
+        assert not np.isnan(result["NITRATE"].values).any()
+
+    # An unknown interp_method raises
+    def test_interp_method_invalid_raises(self, comfort_db):
+        pytest.importorskip("xarray")
+        with pytest.raises(ValueError, match="Unknown method"):
+            load_comfort(comfort_db, parameters=["NITRATE"],
+                        target_depths=[50], interp_method="bogus")
 
     # Two stations with the same PROFILE_NUMBER=1 must produce two distinct profiles
     def test_xarray_composite_profile_key(self, tmp_path):
@@ -639,6 +696,25 @@ class TestReadParameter:
         assert len(df) == 3
         assert (df["PROFILE_NUMBER"] == 1).all()
         assert (df["LATITUDE"] == 55.0).all()
+
+    # extra_station_cols pulls additional station columns (e.g. CRUISE_ID)
+    def test_extra_station_cols(self, comfort_db):
+        conn = sqlite3.connect(comfort_db)
+        conn.execute("ALTER TABLE station ADD COLUMN CRUISE_ID INTEGER")
+        conn.execute("ALTER TABLE station ADD COLUMN ST_NUMBER_ORIGIN TEXT")
+        conn.execute("UPDATE station SET CRUISE_ID=100, ST_NUMBER_ORIGIN='S-01' WHERE ID=1")
+        conn.execute("UPDATE station SET CRUISE_ID=200, ST_NUMBER_ORIGIN='S-02' WHERE ID=2")
+        conn.commit()
+
+        default_df = read_parameter(conn, "NITRATE")
+        assert "CRUISE_ID" not in default_df.columns
+
+        df = read_parameter(conn, "NITRATE", extra_station_cols=["CRUISE_ID", "ST_NUMBER_ORIGIN"])
+        conn.close()
+        assert "CRUISE_ID" in df.columns
+        assert "ST_NUMBER_ORIGIN" in df.columns
+        assert set(df.loc[df["LATITUDE"] == 45.0, "CRUISE_ID"]) == {100}
+        assert set(df.loc[df["LATITUDE"] == 55.0, "ST_NUMBER_ORIGIN"]) == {"S-02"}
 
 
 class TestInfo:
