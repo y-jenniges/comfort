@@ -72,6 +72,7 @@ is distributed as a single multi-gigabyte SQLite file, efficiency and low memory
 For example, space, time and quality filtering is applied on SQL level rather than after loading potentially large data tables into memory and 
 computations were vectorised where possible, for example `distance_to_coast` and `classify_from_grid` functions use a 
 KDTree for candidate search combined with vectorised distance calculations to avoid per-row iterations.
+Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database. 
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
 that corrections and settings apply everywhere consistently. 
