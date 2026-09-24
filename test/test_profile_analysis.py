@@ -137,10 +137,10 @@ class TestMixedLayerDepth:
         result = mixed_layer_depth(self._profile_with_mld_at_100(), density_col="sigma0")
         assert isinstance(result, pd.DataFrame)
 
-    # Output carries profile ID, MLD depth and the exceedance flag
+    # Output carries profile ID and MLD depth
     def test_expected_columns(self):
         result = mixed_layer_depth(self._profile_with_mld_at_100(), density_col="sigma0")
-        assert {"PROFILE_NUMBER", "MLD_m", "threshold_exceeded"}.issubset(result.columns)
+        assert {"PROFILE_NUMBER", "MLD_m"}.issubset(result.columns)
 
     def test_mld_detected_at_correct_depth(self):
         # ref at 0m (nearest to 10m reference): sigma0=25.0
@@ -150,18 +150,16 @@ class TestMixedLayerDepth:
         result = mixed_layer_depth(self._profile_with_mld_at_100(),
                                     density_col="sigma0", delta_density=0.03)
         assert result["MLD_m"].iloc[0] == pytest.approx(87.5)
-        assert result["threshold_exceeded"].iloc[0]
 
-    # When the threshold is never crossed, MLD falls back to the deepest level
-    def test_no_exceedance_returns_max_depth(self):
+    # When the threshold is never crossed, there is no valid MLD
+    def test_no_exceedance_returns_nan(self):
         df = pd.DataFrame({"PROFILE_NUMBER": [1, 1, 1],
                            "LEV_DBAR": [0.0, 100.0, 200.0],
                            "sigma0": [25.0, 25.0, 25.0]})
         result = mixed_layer_depth(df, density_col="sigma0", delta_density=0.03)
-        assert result["MLD_m"].iloc[0] == 200.0
-        assert not result["threshold_exceeded"].iloc[0]
+        assert pd.isna(result["MLD_m"].iloc[0])
 
-    # Temperature threshold also computes MLD and threshold_exceeded correctly
+    # Temperature threshold also computes MLD correctly
     def test_temperature_criterion(self):
         df = pd.DataFrame({"PROFILE_NUMBER": [1, 1, 1, 1],
                            "LEV_DBAR": [0.0, 50.0, 100.0, 200.0],
@@ -170,7 +168,6 @@ class TestMixedLayerDepth:
         # ref=15.0, 100m: |14.75-15.0|=0.25>0.2 → crossing interpolated between 50m and 100m
         # target = 15.0 - 0.2 = 14.8 → 50 + (14.8-15.0)*(100-50)/(14.75-15.0) = 90.0
         assert result["MLD_m"].iloc[0] == pytest.approx(90.0)
-        assert result["threshold_exceeded"].iloc[0]
 
     # When both are given, density_col takes priority over temp_col
     def test_density_preferred_over_temp(self):
@@ -180,7 +177,7 @@ class TestMixedLayerDepth:
                            "CT": [15.0, 15.0, 14.0]})
         result = mixed_layer_depth(df, density_col="sigma0", temp_col="CT", delta_density=0.03)
         # density never exceeds → uses density, not temperature
-        assert not result["threshold_exceeded"].iloc[0]
+        assert pd.isna(result["MLD_m"].iloc[0])
 
     # At least one of density_col/temp_col must be given
     def test_no_column_raises(self):
@@ -232,21 +229,23 @@ class TestPycnoclineDepth:
         result = pycnocline_depth(self._profile_with_pycno_at_100(), density_col="sigma0")
         assert isinstance(result, pd.DataFrame)
 
-    # Output carries profile ID, pycnocline depth, max gradient and significance flag
+    # Output carries profile ID, pycnocline depth and max gradient
     def test_expected_columns(self):
         result = pycnocline_depth(self._profile_with_pycno_at_100(), density_col="sigma0")
-        assert {"PROFILE_NUMBER", "pycnocline_depth_m", "max_gradient", "significant"}.issubset(result.columns)
+        assert {"PROFILE_NUMBER", "pycnocline_depth_m", "max_gradient"}.issubset(result.columns)
 
     # min_gradient=0.0 (default) means every pycnocline counts as significant
-    def test_significant_true_by_default(self):
+    def test_significant_by_default_gives_valid_depth(self):
         result = pycnocline_depth(self._profile_with_pycno_at_100(), density_col="sigma0")
-        assert result["significant"].iloc[0] == True
+        assert not pd.isna(result["pycnocline_depth_m"].iloc[0])
 
-    # A high min_gradient threshold marks a weak pycnocline as not significant
-    def test_significant_false_below_min_gradient(self):
+    # A high min_gradient threshold marks a weak pycnocline as not significant -
+    # depth is NaN, but max_gradient is still reported
+    def test_below_min_gradient_gives_nan_depth(self):
         result = pycnocline_depth(self._profile_with_pycno_at_100(), density_col="sigma0",
                                   min_gradient=1.0)
-        assert result["significant"].iloc[0] == False
+        assert pd.isna(result["pycnocline_depth_m"].iloc[0])
+        assert not pd.isna(result["max_gradient"].iloc[0])
 
     # The pycnocline is placed at the depth of maximum |d(density)/dz|
     def test_pycnocline_at_correct_depth(self):
@@ -291,14 +290,45 @@ class TestProfileCompleteness:
 
 
 class TestInterpolateDepthLevels:
-    # Values are linearly interpolated onto the target depths
+    # Values are interpolated onto the target depths with the default (pchip)
+    # method; on perfectly linear data pchip reduces to the same result as linear
     def test_basic(self):
         df = pd.DataFrame({"PROFILE_NUMBER": [1, 1, 1],
                            "LEV_DBAR": [0.0, 100.0, 200.0],
                            "VAL": [10.0, 8.0, 6.0]})
         result = interpolate_depth_levels(df, target_depths=[0, 50, 100, 150, 200])
+        result_linear = interpolate_depth_levels(df, target_depths=[0, 50, 100, 150, 200], method="linear")
         p1 = result.sort_values("LEV_DBAR")
-        assert abs(p1[p1["LEV_DBAR"] == 50]["VAL"].iloc[0] - 9.0) < 0.01
+        p2 = result_linear.sort_values("LEV_DBAR")
+        v1 = p1[p1["LEV_DBAR"] == 50]["VAL"].iloc[0]
+        v2 = p2[p2["LEV_DBAR"] == 50]["VAL"].iloc[0]
+        assert v1 == pytest.approx(v2, abs=0.01)
+
+    # method="linear" reproduces plain piecewise-linear interpolation
+    def test_linear_method(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1, 1],
+                           "LEV_DBAR": [0.0, 100.0, 200.0],
+                           "VAL": [10.0, 8.0, 6.0]})
+        result = interpolate_depth_levels(df, target_depths=[50], method="linear")
+        assert result["VAL"].iloc[0] == pytest.approx(9.0)
+
+    # pchip (default) and linear disagree on curved (non-collinear) data, since
+    # pchip fits a shape-preserving cubic through the surrounding points
+    def test_pchip_differs_from_linear_on_curved_data(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1, 1],
+                           "LEV_DBAR": [0.0, 50.0, 100.0],
+                           "VAL": [0.0, 1.0, 8.0]})
+        pchip_result = interpolate_depth_levels(df, target_depths=[25], method="pchip")
+        linear_result = interpolate_depth_levels(df, target_depths=[25], method="linear")
+        assert linear_result["VAL"].iloc[0] == pytest.approx(0.5)
+        assert pchip_result["VAL"].iloc[0] != pytest.approx(0.5)
+
+    # Unknown interpolation methods raises
+    def test_invalid_method_raises(self):
+        df = pd.DataFrame({"PROFILE_NUMBER": [1, 1],
+                           "LEV_DBAR": [0.0, 100.0], "VAL": [1.0, 2.0]})
+        with pytest.raises(ValueError, match="Unknown method"):
+            interpolate_depth_levels(df, target_depths=[50], method="bogus")
 
     # Target depths outside the profile's measured range are dropped, not extrapolated
     def test_no_extrapolation(self):
