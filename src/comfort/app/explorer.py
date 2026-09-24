@@ -71,6 +71,13 @@ def _clear_scatter_cache() -> None:
     _scatter_cache["unit_note"] = ""
 
 
+def _clear_csv_cache() -> None:
+    """Release the cached CSV DataFrame to free memory."""
+    _csv_cache["df"] = None
+    _csv_cache["depths"] = []
+    _csv_cache["times"] = []
+
+
 # Shared map styling
 _GEO_STYLE = dict(
     projection_type="natural earth",
@@ -107,6 +114,28 @@ def _query_wide_tables() -> list[str]:
         conn.close()
 
 
+def _query_cruise_labels(conn: sqlite3.Connection) -> dict:
+    """Map CRUISE.ID to a human-readable label (EXPOCODE, falling back to
+    CRUISE_NUMBER). Returns {} if no CRUISE table exists in this database."""
+    try:
+        df = pd.read_sql_query("SELECT ID, EXPOCODE, CRUISE_NUMBER FROM CRUISE", conn)
+    except Exception:
+        return {}
+    has_expocode = df["EXPOCODE"].notna() & (df["EXPOCODE"].astype(str) != "")
+    label = df["EXPOCODE"].where(has_expocode, df["CRUISE_NUMBER"].astype(str))
+    return dict(zip(df["ID"], label))
+
+
+def _format_hover_list(series, max_items=5):
+    """Format up to max_items distinct values from a Series, '...' if more."""
+    uniq = sorted({str(v) for v in series.dropna()})
+    if not uniq:
+        return "-"
+    if len(uniq) > max_items:
+        return ", ".join(uniq[:max_items]) + f", ... (+{len(uniq) - max_items} more)"
+    return ", ".join(uniq)
+
+
 def _make_slider_marks(positions, first_label, last_label):
     """Ticks at every position; labels only at first and last step."""
     marks = {p: "" for p in positions}
@@ -116,9 +145,30 @@ def _make_slider_marks(positions, first_label, last_label):
     return marks
 
 
+def _format_range_label(lo, hi, fmt="{}"):
+    """Format a range as a single value, or 'lo-hi' when the bounds differ."""
+    lo_s, hi_s = fmt.format(lo), fmt.format(hi)
+    return lo_s if lo_s == hi_s else f"{lo_s}-{hi_s}"
+
+
+# (min, max, value, marks, step, disabled) for an empty/disabled range slider
+_EMPTY_RANGE_SLIDER = (0, 1, [0, 1], {0: "-"}, None, True)
+
+# Scatter "Colour by" options
+_COLOUR_BY_LABELS = {
+    "VAL": None,
+    "LEV_M": "Depth (m)",
+    "PQF1": "QC Flag 1",
+    "PQF2": "QC Flag 2",
+    "SQF": "Station QC Flag",
+    "INSTRUMENT_ID": "Instrument ID",
+    "_year": "Year",
+}
+
+
 _ALL_PARAMS = _query_parameters()
 
-app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
+app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], title="COMFORT Explorer")
 
 
 def _build_layout() -> dbc.Container:
@@ -232,6 +282,24 @@ def _scatter_tab() -> dbc.Tab:
                 )),
             ], className="mb-3"),
 
+            # Colour by (map only)
+            dbc.Card([
+                dbc.CardHeader("Colour by (map)"),
+                dbc.CardBody(dbc.Select(
+                    id="sc-colour-by",
+                    options=[
+                        {"label": "Value (selected parameter)", "value": "VAL"},
+                        {"label": "Depth (m)", "value": "LEV_M"},
+                        {"label": "QC Flag 1", "value": "PQF1"},
+                        {"label": "QC Flag 2", "value": "PQF2"},
+                        {"label": "Station QC Flag", "value": "SQF"},
+                        {"label": "Instrument ID", "value": "INSTRUMENT_ID"},
+                        {"label": "Year", "value": "_year"},
+                    ],
+                    value="VAL",
+                )),
+            ], className="mb-3"),
+
             # Plot type
             dbc.Card([
                 dbc.CardHeader("Plot type"),
@@ -246,6 +314,13 @@ def _scatter_tab() -> dbc.Tab:
                     value="map", inline=True,
                 )),
             ], className="mb-3"),
+
+            # Global vs cropped checkbox
+            dbc.Checkbox(
+                id="sc-global-map",
+                value=False,
+                label="Show global",
+            )
         ]),
     ])
 
@@ -273,13 +348,13 @@ def _grid_tab() -> dbc.Tab:
                 dbc.CardBody(dbc.Select(id="grid-param", options=[])),
             ], className="mb-3"),
 
-            # Depth slider (single value, discrete levels)
+            # Depth range slider, a widened range averages on the map
             dbc.Card([
-                dbc.CardHeader("Depth level (m)"),
+                dbc.CardHeader("Depth range (m)"),
                 dbc.CardBody([
-                    dcc.Slider(
+                    dcc.RangeSlider(
                         id="grid-depth-slider",
-                        min=0, max=1, value=0, step=None,
+                        min=0, max=1, value=[0, 1], step=None,
                         marks=None,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
@@ -290,13 +365,13 @@ def _grid_tab() -> dbc.Tab:
                 ])
             ], className="mb-3"),
 
-            # Time slider (single value, discrete steps)
+            # Time range slider (discrete steps, index-based)
             dbc.Card([
-                dbc.CardHeader("Time step"),
+                dbc.CardHeader("Time range"),
                 dbc.CardBody([
-                    dcc.Slider(
+                    dcc.RangeSlider(
                         id="grid-time-slider",
-                        min=0, max=1, value=0, step=None,
+                        min=0, max=1, value=[0, 1], step=None,
                         marks=None,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
@@ -320,6 +395,13 @@ def _grid_tab() -> dbc.Tab:
                     value="map", inline=True,
                 )),
             ], className="mb-3"),
+
+            # Global vs cropped checkbox
+            dbc.Checkbox(
+                id="grid-global-map",
+                value=False,
+                label="Show global",
+            )
         ]),
     ])
 
@@ -356,13 +438,13 @@ def _csv_tab() -> dbc.Tab:
                 dbc.CardBody(dbc.Select(id="csv-param", options=[])),
             ], className="mb-3"),
 
-            # Depth slider (single value, discrete levels)
+            # Depth range slider (discrete levels)
             dbc.Card([
-                dbc.CardHeader("Depth level (m)"),
+                dbc.CardHeader("Depth range (m)"),
                 dbc.CardBody([
-                    dcc.Slider(
+                    dcc.RangeSlider(
                         id="csv-depth-slider",
-                        min=0, max=1, value=0, step=None,
+                        min=0, max=1, value=[0, 1], step=None,
                         marks=None,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
@@ -373,13 +455,13 @@ def _csv_tab() -> dbc.Tab:
                 ])
             ], className="mb-3"),
 
-            # Time slider (single value, discrete steps)
+            # Time range slider (discrete steps, index-based)
             dbc.Card([
-                dbc.CardHeader("Time step"),
+                dbc.CardHeader("Time range"),
                 dbc.CardBody([
-                    dcc.Slider(
+                    dcc.RangeSlider(
                         id="csv-time-slider",
-                        min=0, max=1, value=0, step=None,
+                        min=0, max=1, value=[0, 1], step=None,
                         marks=None,
                         tooltip={"placement": "bottom", "always_visible": False},
                     ),
@@ -417,20 +499,60 @@ def _csv_tab() -> dbc.Tab:
 app.layout = _build_layout()
 
 
-# --- Tab switch --------------------------------------------------------------
+# --- Tab switch -------------------------------------------------------------- #
 
 
-# Free scatter cache when leaving the scatter tab
+# Reset every mode's cache, chart and controls on every tab switch
 @app.callback(
+    Output("chart", "figure", allow_duplicate=True),
+    Output("status", "children", allow_duplicate=True),
     Output("alert", "is_open", allow_duplicate=True),
+    # Scatter controls
+    Output("sc-depth-slider", "min", allow_duplicate=True),
+    Output("sc-depth-slider", "max", allow_duplicate=True),
+    Output("sc-depth-slider", "value", allow_duplicate=True),
+    Output("sc-year-slider", "min", allow_duplicate=True),
+    Output("sc-year-slider", "max", allow_duplicate=True),
+    Output("sc-year-slider", "value", allow_duplicate=True),
+    Output("sc-colour-by", "value", allow_duplicate=True),
+    # CSV controls
+    Output("csv-upload", "contents", allow_duplicate=True),
+    Output("csv-upload", "filename", allow_duplicate=True),
+    Output("csv-filename", "children", allow_duplicate=True),
+    Output("csv-param", "options", allow_duplicate=True),
+    Output("csv-param", "value", allow_duplicate=True),
+    Output("csv-depth-slider", "min", allow_duplicate=True),
+    Output("csv-depth-slider", "max", allow_duplicate=True),
+    Output("csv-depth-slider", "value", allow_duplicate=True),
+    Output("csv-depth-slider", "marks", allow_duplicate=True),
+    Output("csv-depth-slider", "step", allow_duplicate=True),
+    Output("csv-depth-slider", "disabled", allow_duplicate=True),
+    Output("csv-time-slider", "min", allow_duplicate=True),
+    Output("csv-time-slider", "max", allow_duplicate=True),
+    Output("csv-time-slider", "value", allow_duplicate=True),
+    Output("csv-time-slider", "marks", allow_duplicate=True),
+    Output("csv-time-slider", "step", allow_duplicate=True),
+    Output("csv-time-slider", "disabled", allow_duplicate=True),
     Input("tabs", "active_tab"),
     prevent_initial_call=True,
 )
 def _on_tab_switch(active_tab):
-    """Release cached data when switching away from the scatter tab."""
-    if active_tab != "scatter":
-        _clear_scatter_cache()
-    return False
+    """Reset every mode's cache, chart and controls when switching tabs."""
+    _clear_scatter_cache()
+    _clear_csv_cache()
+
+    empty_fig = go.Figure()
+    empty_fig.update_layout(template="plotly_white")
+
+    return (
+        empty_fig, "", False,
+        0, 6000, [0, 6000],
+        1900, 2025, [1900, 2025],
+        "VAL",
+        None, None, "No file selected.", [], None,
+        *_EMPTY_RANGE_SLIDER,
+        *_EMPTY_RANGE_SLIDER,
+    )
 
 
 # --- Scatter callbacks ---------------------------------------------------------------
@@ -452,6 +574,8 @@ def _on_tab_switch(active_tab):
     Input("sc-depth-slider", "value"),
     Input("sc-year-slider", "value"),
     Input("scatter-plot-type", "value"),
+    Input("sc-global-map", "value"),
+    Input("sc-colour-by", "value"),
     State("scatter-param", "value"),
     State("sc-lat-min", "value"), State("sc-lat-max", "value"),
     State("sc-lon-min", "value"), State("sc-lon-max", "value"),
@@ -460,7 +584,7 @@ def _on_tab_switch(active_tab):
     State("sc-year-slider", "min"), State("sc-year-slider", "max"),
     prevent_initial_call=True,
 )
-def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
+def _scatter_callback(n_clicks, depth_range, year_range, plot_type, show_global, colour_by,
                       param, lat_min, lat_max, lon_min, lon_max, use_qc,
                       cur_z_min, cur_z_max, cur_y_min, cur_y_max):
     """Load data on button click, or re-render from cache on slider change."""
@@ -484,6 +608,7 @@ def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
                 conn, param, quality_flags=qc,
                 lat_min=lat_min, lat_max=lat_max,
                 lon_min=lon_min, lon_max=lon_max,
+                extra_station_cols=["CRUISE_ID", "ST_NUMBER_ORIGIN"],
             )
 
             # Convert units to the default for this parameter
@@ -495,6 +620,17 @@ def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
                     converted = True
                 except (ValueError, Exception) as e:
                     _log.warning("Unit conversion skipped: %s", e)
+
+            # Station/cruise hover labels
+            if "ST_NUMBER_ORIGIN" in df.columns:
+                df["_station_label"] = df["ST_NUMBER_ORIGIN"].where(
+                    df["ST_NUMBER_ORIGIN"].notna(), df["ID"].astype(str),
+                )
+            if "CRUISE_ID" in df.columns:
+                cruise_labels = _query_cruise_labels(conn)
+                df["_cruise_label"] = (
+                    df["CRUISE_ID"].map(cruise_labels).fillna(df["CRUISE_ID"].astype(str))
+                )
 
             conn.close()
         except Exception as e:
@@ -531,7 +667,7 @@ def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
         # Render with full data
         unit_note = _scatter_cache["unit_note"]
         status = f"{len(df):,} rows loaded  -  {param}{unit_note}"
-        fig = _scatter_figure(df, param, plot_type, _scatter_cache["bounds"])
+        fig = _scatter_figure(df, param, plot_type, _scatter_cache["bounds"], show_global, colour_by)
         return (fig, status,
                 z_min, z_max, [z_min, z_max],
                 y_min, y_max, [y_min, y_max],
@@ -572,11 +708,11 @@ def _scatter_callback(n_clicks, depth_range, year_range, plot_type,
 
     unit_note = _scatter_cache.get("unit_note", "")
     status = f"{len(filtered):,} rows  -  {param}{unit_note}"
-    fig = _scatter_figure(filtered, param, plot_type, bounds)
+    fig = _scatter_figure(filtered, param, plot_type, bounds, show_global, colour_by)
     return fig, status, *no_slider, "", False
 
 
-def _scatter_figure(df, param, plot_type, bounds):
+def _scatter_figure(df, param, plot_type, bounds, show_global=False, colour_by="VAL"):
     """Build a Plotly figure for the scatter tab."""
     # Crop map to the queried spatial extent with padding
     lat_min = bounds.get("lat_min", -90)
@@ -586,24 +722,54 @@ def _scatter_figure(df, param, plot_type, bounds):
     lat_pad = (lat_max - lat_min) * 0.05
     lon_pad = (lon_max - lon_min) * 0.05
 
+    # Resolve the "Colour by" selection
+    colour_col = colour_by if colour_by in df.columns else "VAL"
+    colour_label = param if colour_col == "VAL" else _COLOUR_BY_LABELS.get(colour_col, colour_col)
+    extra_colour = None if colour_col == "VAL" else colour_col
+
     if plot_type == "map" and "LATITUDE" in df.columns:
+        # Aggregate to one value per lat/lon (mean)
+        is_aggregated = df.duplicated(subset=["LATITUDE", "LONGITUDE"]).any()
+        agg_kwargs = {colour_col: (colour_col, "mean"), "n_obs": (colour_col, "size")}
+        if "_station_label" in df.columns:
+            agg_kwargs["stations"] = ("_station_label", _format_hover_list)
+        if "_cruise_label" in df.columns:
+            agg_kwargs["cruises"] = ("_cruise_label", _format_hover_list)
+        plot_df = df.groupby(["LATITUDE", "LONGITUDE"], as_index=False).agg(**agg_kwargs)
+
+        title_suffix = " (mean)" if is_aggregated else ""
+        hover_data = {"n_obs": True}
+        hover_labels = {colour_col: colour_label, "n_obs": "# obs"}
+        for extra_col, label in (("stations", "Stations"), ("cruises", "Cruises")):
+            if extra_col in plot_df.columns:
+                hover_data[extra_col] = True
+                hover_labels[extra_col] = label
+
         fig = px.scatter_geo(
-            df, lat="LATITUDE", lon="LONGITUDE", color="VAL",
+            plot_df, lat="LATITUDE", lon="LONGITUDE", color=colour_col,
             color_continuous_scale="Viridis",
-            labels={"VAL": param},
-            title=f"{param} - spatial distribution",
+            labels=hover_labels,
+            hover_data=hover_data,
+            title=f"{colour_label}{title_suffix} - spatial distribution",
         )
-        fig.update_geos(
-            **_GEO_STYLE,
-            lataxis_range=[lat_min - lat_pad, lat_max + lat_pad],
-            lonaxis_range=[lon_min - lon_pad, lon_max + lon_pad],
-        )
+        if show_global:
+            fig.update_geos(
+                **_GEO_STYLE,
+                lataxis_range=[-90, 90],
+                lonaxis_range=[-180, 180],
+            )
+        else:
+            fig.update_geos(
+                **_GEO_STYLE,
+                lataxis_range=[lat_min - lat_pad, lat_max + lat_pad],
+                lonaxis_range=[lon_min - lon_pad, lon_max + lon_pad],
+            )
     elif plot_type == "profile":
         fig = px.scatter(
-            df, x="VAL", y="LEV_M",
-            labels={"VAL": param, "LEV_M": "Depth (m)"},
-            title=f"{param} - depth profile",
-            opacity=0.3,
+            df, x="VAL", y="LEV_M", color=extra_colour,
+            labels={"VAL": param, "LEV_M": "Depth (m)", colour_col: colour_label},
+            title=f"{param} - depth profile" + (f", coloured by {colour_label}" if extra_colour else ""),
+            opacity=0.3 if extra_colour is None else 0.6,
         )
         fig.update_yaxes(autorange="reversed")
     elif plot_type == "time" and "DATEANDTIME" in df.columns:
@@ -612,16 +778,16 @@ def _scatter_figure(df, param, plot_type, bounds):
             temp["DATEANDTIME"], errors="coerce",
         )
         fig = px.scatter(
-            temp, x="DATEANDTIME", y="VAL",
-            labels={"VAL": param, "DATEANDTIME": "Date"},
-            title=f"{param} - time series",
-            opacity=0.3,
+            temp, x="DATEANDTIME", y="VAL", color=extra_colour,
+            labels={"VAL": param, "DATEANDTIME": "Date", colour_col: colour_label},
+            title=f"{param} - time series" + (f", coloured by {colour_label}" if extra_colour else ""),
+            opacity=0.3 if extra_colour is None else 0.6,
         )
     else:
         fig = px.histogram(
-            df, x="VAL", nbins=80,
-            labels={"VAL": param},
-            title=f"{param} - value distribution",
+            df, x="VAL", color=extra_colour, nbins=80,
+            labels={"VAL": param, colour_col: colour_label},
+            title=f"{param} - value distribution" + (f", coloured by {colour_label}" if extra_colour else ""),
         )
 
     fig.update_layout(template="plotly_white")
@@ -641,10 +807,8 @@ def _scatter_figure(df, param, plot_type, bounds):
 def _refresh_wide_tables(_tab, _n):
     """Populate the wide table dropdown with available grid tables."""
     tables = _query_wide_tables()
-    if not tables:
-        return [], None
     options = [{"label": t, "value": t} for t in tables]
-    return options, options[0]["value"]
+    return options, None
 
 
 # Configure grid sliders when a wide table is selected
@@ -666,12 +830,12 @@ def _refresh_wide_tables(_tab, _n):
     Input("grid-table", "value"),
 )
 def _populate_grid_controls(table_name):
-    """Read the wide table structure and configure depth and time sliders."""
+    """Read the wide table structure and configure depth and time range sliders."""
     if not table_name:
         return (
             [], None,
-            0, 1, 0, {0: "-"}, None, True,
-            0, 1, 0, {0: "-"}, None, True,
+            0, 1, [0, 1], {0: "-"}, None, True,
+            0, 1, [0, 1], {0: "-"}, None, True,
         )
 
     conn = _get_conn()
@@ -701,39 +865,45 @@ def _populate_grid_controls(table_name):
     param_cols = [c for c in all_cols if c not in meta_cols]
     p_opts = [{"label": c, "value": c} for c in param_cols]
 
-    # Depth slider: tick at every level, label only first and last
+    # Depth range slider: Tick at every level, label only first and last
     if len(depths) > 1:
         d_marks = _make_slider_marks(
             [float(d) for d in depths],
             f"{float(depths[0]):.0f}m", f"{float(depths[-1]):.0f}m",
         )
-        d_min, d_max, d_val = float(depths[0]), float(depths[-1]), float(depths[0])
+        d_min, d_max = float(depths[0]), float(depths[-1])
+        d_val = [d_min, d_min]
         d_step, d_disabled = None, False
     elif len(depths) == 1:
         d_marks = _make_slider_marks(
             [float(depths[0])],
             f"{float(depths[0]):.0f}m", f"{float(depths[0]):.0f}m",
         )
-        d_min = d_max = d_val = float(depths[0])
+        d_min = d_max = float(depths[0])
+        d_val = [d_min, d_min]
         d_step, d_disabled = None, True
     else:
-        d_marks, d_min, d_max, d_val = {0: "-"}, 0, 1, 0
+        d_marks, d_min, d_max = {0: "-"}, 0, 1
+        d_val = [0, 1]
         d_step, d_disabled = None, True
 
-    # Time slider: index-based, snap to marks only (step=None avoids the editable input)
+    # Time range slider: Index-based, snap to marks only
     if len(times) > 1:
         t_marks = _make_slider_marks(
             list(range(len(times))),
             str(times[0])[:10], str(times[-1])[:10],
         )
-        t_min, t_max, t_val = 0, len(times) - 1, 0
+        t_min, t_max = 0, len(times) - 1
+        t_val = [0, 0]
         t_step, t_disabled = None, False
     elif len(times) == 1:
         t_marks = {0: str(times[0])[:10]}
-        t_min = t_max = t_val = 0
+        t_min = t_max = 0
+        t_val = [0, 0]
         t_step, t_disabled = None, True
     else:
-        t_marks, t_min, t_max, t_val = {0: "-"}, 0, 1, 0
+        t_marks, t_min, t_max = {0: "-"}, 0, 1
+        t_val = [0, 1]
         t_step, t_disabled = None, True
 
     return (
@@ -753,31 +923,35 @@ def _populate_grid_controls(table_name):
     Input("grid-depth-slider", "value"),
     Input("grid-time-slider", "value"),
     Input("grid-plot-type", "value"),
+    Input("grid-global-map", "value"),
     State("grid-table", "value"),
     prevent_initial_call=True,
 )
-def _render_grid(param_col, depth_val, time_idx, plot_type, table_name):
-    """Query a single depth/time slice from the wide table and render."""
+def _render_grid(param_col, depth_range, time_idx_range, plot_type, show_global, table_name):
+    """Query a depth/time range from the wide table and render."""
     if not table_name or not param_col:
         raise PreventUpdate
 
     depths = _grid_cache.get("depths", [])
     times = _grid_cache.get("times", [])
 
-    # Resolve time slider index to actual value
-    time_val = times[int(time_idx)] if times and time_idx is not None else None
+    # Resolve time slider index range to actual time values
+    time_range = None
+    if times and time_idx_range is not None:
+        lo, hi = int(time_idx_range[0]), int(time_idx_range[1])
+        time_range = (times[lo], times[hi])
 
-    # Query only the selected depth/time slice
+    # Query only the selected depth/time range
     try:
         conn = _get_conn()
         conditions = []
         params = []
-        if depth_val is not None and depths:
-            conditions.append("LEV_M = ?")
-            params.append(float(depth_val))
-        if time_val is not None:
-            conditions.append("DATEANDTIME = ?")
-            params.append(time_val)
+        if depth_range is not None and depths:
+            conditions.append("LEV_M >= ? AND LEV_M <= ?")
+            params.extend([float(depth_range[0]), float(depth_range[1])])
+        if time_range is not None:
+            conditions.append("DATEANDTIME >= ? AND DATEANDTIME <= ?")
+            params.extend([time_range[0], time_range[1]])
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         df = pd.read_sql_query(
@@ -794,12 +968,19 @@ def _render_grid(param_col, depth_val, time_idx, plot_type, table_name):
     # Build status text
     n_total = len(df)
     n_valid = df[param_col].notna().sum()
-    depth_label = f"{depth_val:.0f} m" if depth_val is not None else "all"
-    time_label = str(time_val)[:10] if time_val else "all"
+    depth_label = (
+        _format_range_label(depth_range[0], depth_range[1], "{:.0f}") + " m"
+        if depth_range is not None else "all"
+    )
+    time_label = (
+        _format_range_label(str(time_range[0])[:10], str(time_range[1])[:10])
+        if time_range is not None else "all"
+    )
     status = (f"{n_valid:,} / {n_total:,} cells - "
               f"{param_col}  |  depth: {depth_label}  |  time: {time_label}")
 
-    fig = _grid_figure(df, param_col, depth_label, plot_type)
+    label = f"depth {depth_label}" + (f", time {time_label}" if time_range is not None else "")
+    fig = _grid_figure(df, param_col, label, plot_type, show_global)
     return fig, status, "", False
 
 
@@ -808,21 +989,22 @@ def _render_grid(param_col, depth_val, time_idx, plot_type, table_name):
     Input("grid-depth-slider", "value"),
 )
 def _show_grid_depth(val):
-    if val is None:
+    if not val:
         return ""
-    return f"Depth: {val:.0f}m"
+    return f"Depth: {_format_range_label(val[0], val[1], '{:.0f}')}m"
 
 
 @app.callback(
     Output("grid-time-display", "children"),
     Input("grid-time-slider", "value"),
 )
-def _show_grid_time(idx):
+def _show_grid_time(idx_range):
     times = _grid_cache.get("times", [])
-    if not times or idx is None:
+    if not times or not idx_range:
         return ""
     try:
-        return f"Datetime: {str(times[int(idx)])}"
+        lo, hi = int(idx_range[0]), int(idx_range[1])
+        return f"Datetime: {_format_range_label(str(times[lo]), str(times[hi]))}"
     except Exception:
         return ""
 
@@ -830,12 +1012,15 @@ def _show_grid_time(idx):
 def _grid_figure(df, param_col, depth_label, plot_type, show_global=False):
     """Build a Plotly figure for the grid tab."""
     if plot_type == "map":
-        # Show only cells with data
-        plot_df = df[df[param_col].notna()].copy()
+        # Show only cells with data, aggregated to one value per lat/lon (mean)
+        valid = df[df[param_col].notna()]
+        is_aggregated = valid.duplicated(subset=["LATITUDE", "LONGITUDE"]).any()
+        plot_df = valid.groupby(["LATITUDE", "LONGITUDE"], as_index=False)[param_col].mean()
+        title_suffix = " (mean)" if is_aggregated else ""
         fig = px.scatter_geo(
             plot_df, lat="LATITUDE", lon="LONGITUDE", color=param_col,
             color_continuous_scale="Viridis",
-            title=f"{param_col} - {depth_label}",
+            title=f"{param_col}{title_suffix} - {depth_label}",
         )
         # Crop map to grid extent
         lat_min, lat_max = df["LATITUDE"].min(), df["LATITUDE"].max()
@@ -890,6 +1075,7 @@ def _grid_figure(df, param_col, depth_label, plot_type, show_global=False):
 
 
 @app.callback(
+    Output("csv-filename", "children"),
     Output("csv-param", "options"),
     Output("csv-param", "value"),
     Output("csv-depth-slider", "min"),
@@ -917,12 +1103,15 @@ def _load_csv(contents, filename):
     decoded = base64.b64decode(content_string)
     df = pd.read_csv(io.StringIO(decoded.decode("utf-8")))
 
-    df["DATEANDTIME"] = pd.to_datetime(df["DATEANDTIME"])
+    # DATEANDTIME is optional
+    has_time = "DATEANDTIME" in df.columns
+    if has_time:
+        df["DATEANDTIME"] = pd.to_datetime(df["DATEANDTIME"])
     _csv_cache["df"] = df
 
     # Available depth/time values
     depths = np.sort(df["LEV_M"].dropna().unique())
-    times = np.sort(df["DATEANDTIME"].unique())
+    times = np.sort(df["DATEANDTIME"].unique()) if has_time else np.array([])
 
     _csv_cache["depths"] = [float(d) for d in depths]
     _csv_cache["times"] = list(times)
@@ -935,42 +1124,49 @@ def _load_csv(contents, filename):
     param_cols = [c for c in df.columns if c not in meta_cols]
     p_opts = [{"label": c, "value": c} for c in param_cols]
 
-    # Depth slider: tick at every level, label only first and last
+    # Depth range slider: Tick at every level, label only first and last
     if len(depths) > 1:
         d_marks = _make_slider_marks(
             [float(d) for d in depths],
             f"{float(depths[0]):.0f}m", f"{float(depths[-1]):.0f}m",
         )
-        d_min, d_max, d_val = float(depths[0]), float(depths[-1]), float(depths[0])
+        d_min, d_max = float(depths[0]), float(depths[-1])
+        d_val = [d_min, d_min]
         d_step, d_disabled = None, False
     elif len(depths) == 1:
         d_marks = _make_slider_marks(
             [float(depths[0])],
             f"{float(depths[0]):.0f}m", f"{float(depths[0]):.0f}m",
         )
-        d_min = d_max = d_val = float(depths[0])
+        d_min = d_max = float(depths[0])
+        d_val = [d_min, d_min]
         d_step, d_disabled = None, True
     else:
-        d_marks, d_min, d_max, d_val = {0: "-"}, 0, 1, 0
+        d_marks, d_min, d_max = {0: "-"}, 0, 1
+        d_val = [0, 1]
         d_step, d_disabled = None, True
 
-    # Time slider: index-based, snap to marks only (step=None avoids the editable input)
+    # Time range slider: Index-based, snap to marks only
     if len(times) > 1:
         t_marks = _make_slider_marks(
             list(range(len(times))),
             str(pd.Timestamp(times[0]))[:10], str(pd.Timestamp(times[-1]))[:10],
         )
-        t_min, t_max, t_val = 0, len(times) - 1, 0
+        t_min, t_max = 0, len(times) - 1
+        t_val = [0, 0]
         t_step, t_disabled = None, False
     elif len(times) == 1:
         t_marks = {0: str(pd.Timestamp(times[0]))[:10]}
-        t_min = t_max = t_val = 0
+        t_min = t_max = 0
+        t_val = [0, 0]
         t_step, t_disabled = None, True
     else:
-        t_marks, t_min, t_max, t_val = {0: "-"}, 0, 1, 0
+        t_marks, t_min, t_max = {0: "-"}, 0, 1
+        t_val = [0, 1]
         t_step, t_disabled = None, True
 
     return (
+        f"Loaded: {filename} ({len(df):,} rows)",
         p_opts, param_cols[0] if param_cols else None,
         d_min, d_max, d_val, d_marks, d_step, d_disabled,
         t_min, t_max, t_val, t_marks, t_step, t_disabled,
@@ -990,20 +1186,26 @@ def _load_csv(contents, filename):
     Input("csv-global-map", "value"),
     prevent_initial_call=True,
 )
-def _render_csv(param_col, depth_val, time_idx, plot_type, show_global):
-    """Query a single depth/time slice from the CSV table and render."""
+def _render_csv(param_col, depth_range, time_idx_range, plot_type, show_global):
+    """Query a depth/time range from the CSV table and render."""
     if _csv_cache["df"] is None or not param_col:
         raise PreventUpdate
 
     depths = _csv_cache.get("depths", [])
     times = _csv_cache.get("times", [])
 
-    # Resolve time slider index to actual value
-    time_val = times[int(time_idx)] if times and time_idx is not None else None
+    # Resolve time slider index range to actual time values
+    time_range = None
+    if times and time_idx_range is not None:
+        lo, hi = int(time_idx_range[0]), int(time_idx_range[1])
+        time_range = (times[lo], times[hi])
 
-    # Get the selected depth/time slice
+    # Get the selected depth/time range (DATEANDTIME may be absent)
     df = _csv_cache["df"]
-    df = df[(df["LEV_M"] == depth_val) & (df["DATEANDTIME"] == time_val)]
+    mask = df["LEV_M"].between(depth_range[0], depth_range[1]) if depth_range is not None else True
+    if "DATEANDTIME" in df.columns and time_range is not None:
+        mask &= df["DATEANDTIME"].between(time_range[0], time_range[1])
+    df = df[mask]
 
     if df.empty:
         return no_update, "0 rows", "No data for this selection.", True
@@ -1011,12 +1213,19 @@ def _render_csv(param_col, depth_val, time_idx, plot_type, show_global):
     # Build status text
     n_total = len(df)
     n_valid = df[param_col].notna().sum()
-    depth_label = f"{depth_val:.0f} m" if depth_val is not None else "all"
-    time_label = str(time_val)[:10] if time_val else "all"
+    depth_label = (
+        _format_range_label(depth_range[0], depth_range[1], "{:.0f}") + " m"
+        if depth_range is not None else "all"
+    )
+    time_label = (
+        _format_range_label(str(time_range[0])[:10], str(time_range[1])[:10])
+        if time_range is not None else "all"
+    )
     status = (f"{n_valid:,} / {n_total:,} cells - "
               f"{param_col} | depth: {depth_label} | time: {time_label}")
 
-    fig = _grid_figure(df, param_col, depth_label, plot_type, show_global)
+    label = f"depth {depth_label}" + (f", time {time_label}" if time_range is not None else "")
+    fig = _grid_figure(df, param_col, label, plot_type, show_global)
     return fig, status, "", False
 
 
@@ -1025,22 +1234,25 @@ def _render_csv(param_col, depth_val, time_idx, plot_type, show_global):
     Input("csv-depth-slider", "value"),
 )
 def _show_csv_depth(val):
-    if val is None:
+    if not val:
         return ""
-    return f"Depth: {val:.0f}m"
+    return f"Depth: {_format_range_label(val[0], val[1], '{:.0f}')}m"
 
 
 @app.callback(
     Output("csv-time-display", "children"),
     Input("csv-time-slider", "value"),
 )
-def _show_csv_time(idx):
+def _show_csv_time(idx_range):
     # Use csv cache, not grid cache
     times = _csv_cache.get("times", [])
-    if not times or idx is None:
+    if not times or not idx_range:
         return ""
     try:
-        return f"Datetime: {pd.Timestamp(times[int(idx)]).strftime('%Y-%m-%d %H:%M:%S')}"
+        lo, hi = int(idx_range[0]), int(idx_range[1])
+        lo_s = pd.Timestamp(times[lo]).strftime("%Y-%m-%d %H:%M:%S")
+        hi_s = pd.Timestamp(times[hi]).strftime("%Y-%m-%d %H:%M:%S")
+        return f"Datetime: {_format_range_label(lo_s, hi_s)}"
     except Exception:
         return ""
 
