@@ -14,10 +14,16 @@ At a latitude, longitude and time, a station defines where measurements were tak
 At a station, profiles are measured, i.e. a parameter like temperature at different depths with a specific instrument.
 There can be multiple profiles at the same station, though in the COMFORT database, it is mostly one profile per station. 
 
+This library bases on and extends code developed in [3], including parts of the gridding, unit conversion, analysis and plotting 
+routines.
 
-[1] Korablev, A., Olsen, A., Geophysical Institute, University of Bergen, Bjerknes Centre for Climate Research (2022). COMFORT Dataset [Data set]. NIRD RDA. https://doi.org/10.11582/2022.00039
+[1] Korablev, A., Olsen, A., (2022) Geophysical Institute, University of Bergen, Bjerknes Centre for Climate Research. COMFORT Dataset [Data set]. NIRD RDA. https://doi.org/10.11582/2022.00039
 
 [2] McDougall, T., & Barker, P. (2011). Getting started with TEOS-10 and the Gibbs Seawater (GSW) Oceanographic Toolbox. SCOR/IAPSO WG127
+
+[3] Jenniges, Y., Sonnewald, M., Maneth, S., Olsen, A., Koch, Boris P., (2025) Unveiling 3D ocean biogeochemical provinces in the North Atlantic: 
+A systematic comparison and validation of clustering methods, Ecological Informatics, Volume 91, 103390, ISSN 1574-9541,
+https://doi.org/10.1016/j.ecoinf.2025.103390.
 
 ---
 
@@ -47,8 +53,8 @@ pip install "comfort-db[geo,plot]"
 **From source (editable, for development):**
 
 ```bash
-git clone https://github.com/y-jenniges/comfort_lib.git
-cd comfort_lib
+git clone https://github.com/y-jenniges/comfort.git
+cd comfort
 pip install -e ".[dev]"
 ```
 
@@ -111,9 +117,15 @@ pytest
 
 ## Citing
 
-If you use `comfort-db` in published work, please cite the COMFORT dataset [1] and this library.
-TEOS-10 physical oceanography (`comfort.physics`) is computed via the [`gsw`](https://github.com/TEOS-10/GSW-Python) 
-library - please also cite [2]. 
+If you use `comfort-db` in published work, please cite the COMFORT dataset [1] and this library: 
+```bibtex
+@article{jenniges_inprep,
+    author = {Yvonne Jenniges and Are Olsen and Boris Peter Koch and Sebastian Maneth},
+    title = {{comfort-db}: A Python toolkit to access, preprocess and explore the oceanographic COMFORT database},
+    journal = {Journal of Open Source Software},
+    year = {in prep.},
+}
+```
 
 ## License
 
