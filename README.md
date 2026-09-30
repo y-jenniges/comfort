@@ -98,7 +98,7 @@ pip install -e ".[docs]"
 sphinx-build documentation/source documentation/build/html
 ```
 
-Runnable scripts (requiring the COMFORT database) covering every module live in [`examples/`](examples/).
+Runnable scripts (requiring the COMFORT database), covering every module, live in [`examples/`](examples/).
 
 ---
 
