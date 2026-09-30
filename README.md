@@ -98,7 +98,7 @@ pip install -e ".[docs]"
 sphinx-build documentation/source documentation/build/html
 ```
 
-Runnable scripts (partly self-contained, partly requiring the database) covering every module live in [`examples/`](examples/) - start with `01_quickstart.py`.
+Runnable scripts (requiring the COMFORT database) covering every module live in [`examples/`](examples/).
 
 ---
 
