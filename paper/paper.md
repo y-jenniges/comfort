@@ -11,10 +11,10 @@ tags:
 authors:
   - name: Yvonne Jenniges
     affiliation: "1, 3"
-  - name: Boris Peter Koch
-    affiliation: "2"
   - name: Are Olsen
     affiliation: "4"
+  - name: Boris Peter Koch
+    affiliation: "2"
   - name: Sebastian Maneth
     affiliation: "1"
 
@@ -34,55 +34,78 @@ bibliography: paper.bib
 ---
 
 ![TS](ts_oxygen_global.png)
-*Figure 1: Global temperature-salinity diagram (`comfort.plot`)
-with isopycnals (dashed lines) of all quality-controlled (`QC_GOOD`) COMFORT observations. 
+*Figure 1: Global temperature-salinity diagram (`comfort.plot`) 
+with isopycnals in kg/m^3 (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
+of oxygen observations from the COMFORT database. 
+Only quality-controlled (`QC_GOOD`) data are loaded, units are harmonised (`comfort.units`) and
+oxygen values that are approximately equal to their co-located absolute salinity are dropped (`flag_salinity_like_oxygen`). 
+Duplicate spatio-temporal locations are averaged (`average_duplicate_locations`) and temperature, salinity and oxygen inner-joined. 
 Absolute Salinity ($S_A$) and Conservative Temperature ($\Theta$) are derived via TEOS-10 (`comfort.physics`). 
-Observation density is aggregated into hexagonal bins and coloured by oxygen concentration after harmonising units 
-(`comfort.units`). The three visible low-oxygen zones in the plot correspond to known oxygen depleted areas 
+The remaining 40,425,889 data points (out of 67,085,418 oxygen observations in the database) are averaged into hexagonal bins and coloured by oxygen concentration. 
+The three visible low-oxygen zones in the plot broadly correspond to known oxygen-depleted areas 
 in the Baltic, Black and Arabian Sea [@paulmier2009].*
 
 ## Summary
-`comfort-db` is a Python library that facilitates working with the COMFORT SQLite database [@comfort_dataset2022]. 
+`comfort-db` is a Python library that facilitates working with the COMFORT SQLite database, version 2 [@comfort_dataset2022]. 
 The database assembles global oceanographic measurements from ten datasets and contains a total of 458,724,734 in-situ measurements from the years 1772 to 2020.
 `comfort-db` enables easy access to the database and provides preprocessing and exploratory analysis utilities. 
-Preprocessing supports variable scaling and filtering for space, time and quality. 
-Unit conversions are implemented following [@comfort_report2021] and can easily be added during data loading or separately via a converter object. 
+Preprocessing supports variable scaling and filtering by space, time and quality. 
+Unit conversions are implemented as described in the COMFORT compilation report [@comfort_report2021] 
+and can be applied during data loading or separately via a converter object. 
 TEOS-10 physical oceanography (`comfort.physics`) is built on the `gsw` library [@mcdougall2011]. 
-Gridding is supported and optionally works with bathymetry data to exclude grid cells on land.
-Moreover, the library supports general and field-specific exploratory data analysis by plotting functions, an interactive dash app and functions to compute
-oceanographic profile and water mass statistics. 
+Gridding is supported and optionally works with bathymetry data (e.g. GEBCO [@gebco2022]) to exclude grid cells on land.
+Moreover, the library supports general and field-specific exploratory data analysis through plotting functions, 
+an interactive dash app and functions to compute oceanographic profile and water mass statistics. 
+
+`comfort-db` bases on and extends code originally developed for [@jenniges2025], including parts of the gridding,
+unit conversion, database and plotting routines.
 
 ## Statement of need
 Currently, a large preprocessing pipeline is required to work with the COMFORT database. 
-Users must perform SQLite queries, interpret quality flags, convert units, which involves computing TEOS-10 variables and averaging temperature and salinity variables 
-and, depending on the use case, interpolate profiles, perform scaling and gridding.
+Users must perform SQLite queries, interpret quality flags and convert units, which involves computing TEOS-10 variables and averaging temperature and salinity variables to get a unique match for an oxygen observation.  
+Depending on the use case, users way also want to interpolate profiles, perform scaling and gridding.
 `comfort-db` integrates these tasks into one reproducible Python workflow and thus contributes to sustainable and transparent analyses built on the COMFORT database.
 This enables users of the COMFORT dataset, oceanographers without a strong software background and data scientists without a strong oceanographic background, to 
 focus on scientific questions rather than repeated, error-prone data preprocessing and wrangling. 
 
 ## State of the field
-A similar library is argopy [@argopy2020] that enables data access, manipulation and visualisation of Argo float data. 
-The COMFORT database is broader in scope, merging Argo float data with other in-situ sources such as ship-based measurements,
-and has its own SQLite schema, quality flag conventions and unit definitions, which do not map onto argopy's NetCDF-based interface.
+A related library is `argopy` [@argopy2020] that enables data access, manipulation and visualisation of Argo float data. 
+However, the COMFORT database differs from Argo not only in file format (SQLite vs. NetCDF), but also in scope and structure: 
+It merges ten datasets into a station/profile hierarchy with own SQLite schema, quality flag conventions and unit definitions and intended conversions.
+A simple adapter to `argopy` would not cover this schema- and domain-specific functionality
 To our knowledge, no existing package offers a comparable reproducible interface to the COMFORT database.
 
 ## Software design
 The organisation of the `comfort-db` library is driven by usability and the scale of the COMFORT database. Since the database
-is distributed as a single multi-gigabyte SQLite file, efficiency and low memory load were key design goals. 
-For example, space, time and quality filtering is applied on SQL level rather than after loading potentially large data tables into memory and 
-computations were vectorised where possible, for example `distance_to_coast` and `classify_from_grid` functions use a 
-KDTree for candidate search combined with vectorised distance calculations to avoid per-row iterations.
-Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database. 
+is distributed as a single multi-gigabyte SQLite file, efficiency and low memory use were key design goals. 
+For example, space, time and quality filtering is applied at the SQL level rather than after loading potentially large data tables into memory.
+<!-- SQLite does not support polygon-based filtering, e.g. to extract a specific ocean basin. Therefore, `comfort-db` enables -->
+<!-- it by first computing a broader bounding box, filtering for it in the database and subsequently filtering the data in-memory to -->
+<!-- the exact polygon shape. -->
+Computations were vectorised where possible to avoid per-row iteration. For example, `distance_to_coast` builds a KDTree
+on radian-converted coastline coordinates, retrieves the five nearest candidate coastline points and computes exact
+vectorised haversine distances among them. The `classify_from_grid` function similarly performs a KDTree search, but only
+retrieves a single nearest-neighbour, without a subsequent refinement step. 
+Both functions approximate great-circle distance with Euclidean distance in radians, which is imprecise near the poles and the 
+antimeridian (+-180°).
+Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database.
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
 that corrections and settings apply everywhere consistently. 
-To cater to a diverse audience, heavier more specialised functionalities such as plotting, geospatial analysis, gridding, scaling and the Dash app,
-are gated behind optional installs (`plot`, `geo`, `grid`, `scale`, `dash`). Thus, the core package stays lightweight for users who only
+To cater to a diverse audience, more specialised functionality such as plotting, geospatial analysis, gridding, scaling and the dash app,
+is available through optional installs (`plot`, `geo`, `grid`, `scale`, `dash`). Thus, the core package stays lightweight for users who only
 need database access and preprocessing.
 
-Figure 1 was generated by example 7, which illustrates an exemplary comfort-db usage end-to-end: 
-Quality filtering, TEOS-10 conversion and unit harmonisation was applied and 
-the data was then rendered as a global temperature-salinity diagram coloured by oxygen concentration.
+Observations need to be averaged at certain processing steps. 
+The COMFORT database contains multiple station IDs at the same spatio-temporal location since multiple large datasets were 
+combined and partly contain duplicate information. Therefore, `average_duplicate_locations` identifies such duplicates 
+by latitude, longitude, depth and time, catching cross-source duplicates that station ID alone would miss.
+When auxiliary temperature and salinity are added to another parameter table, e.g. for unit conversions, they are first 
+averaged by station and depth (`io._read_with_geo`), because a station can have multiple profiles, 
+i.e. measurements from different instruments at the same sampling event, and averaging them yields a single representative value for the conversion.
+
+Figure 1 was generated by example 7, which illustrates quality filtering, TEOS-10 conversion and unit harmonisation.
+The data were then rendered as a global temperature-salinity diagram coloured by oxygen concentration.
 
 ## Research impact statement
 The COMFORT dataset provides a large compilation of oceanographic observations, including data from 
@@ -92,22 +115,22 @@ Accessing, preprocessing and exploring this data can require substantial technic
 workflows. 
 
 To this point, [@jenniges2025] is the only published study using the COMFORT database and investigated three-dimensional
-biogeochemical provinces in the North Atlantic. The upcoming [@jenniges2027] will apply the data to spatio-temporal imputation 
+biogeochemical provinces in the North Atlantic. Future analyses [@jenniges2027] will apply the data to spatio-temporal imputation 
 of North Atlantic biogeochemistry at 20-year intervals. The preprocessing of both studies can be closely reproduced
 using `comfort-db` (examples 9 and 10, respectively), with minor numerical differences from refinements to the
 density conventions since the original analyses.
 
 ## AI usage disclosure
-Generative AI (Anthropic Claude, via Claude Code) was used under direct supervision of the corresponding author (Y. Jenniges) 
+Generative AI (Anthropic Claude Code, primarily Claude Sonnet 5) was used under direct supervision of the corresponding author (Y.J.) 
 to re-structure the author's own pre-existing analysis scripts into an installable package, 
 update accompanying documentation, draft the majority of the tests and 
-assisted in identifying and fixing bugs. 
+assist in visualisations and identifying and fixing bugs. 
 All code was reviewed by the corresponding author, who implemented the original scientific logic. 
-Correctness was verified via the tests, checks against manually computed
-unit conversions and execution of all example scripts. 
+Correctness was assessed via the tests, checks against manually computed
+unit conversions (`CONVERSION_REFERENCE` in `test/test_units.py`) and execution of all example scripts. 
 
 ## Acknowledgements
-The first author (Y. Jenniges) was funded through the University of Bremen and 
+The first author (Y.J.) is funded through the University of Bremen and 
 the Helmholtz School for Marine Data Science (MarDATA).
 This work has been kindly supported by computing infrastructure of 
-the Alfred-Wegener Institut, Helmholtz-Zentrum für Polar- und Meeresforschung. 
+the Alfred-Wegener Institut, Helmholtz-Zentrum für Polar- und Meeresforschung.
