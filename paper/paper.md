@@ -20,7 +20,7 @@ authors:
 
 affiliations:
   - index: 1
-    name: University of Bremen, Bibliothekstra{\ss}e 1, Bremen 28359, Germany
+    name: University of Bremen, Bibliothekstra\sse 1, Bremen 28359, Germany
   - index: 2
     name: Alfred-Wegener-Institut, Helmholtz-Zentrum für Polar- und Meeresforschung, Am Handelshafen 12, Bremerhaven 27570, Germany
   - index: 3
