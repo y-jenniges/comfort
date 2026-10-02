@@ -164,12 +164,12 @@ def _get_coast_points(resolution, coastline_geom):
 
 def _extract_coords(geom, coords):
     """Recursively extract (lon, lat) coordinates from a shapely geometry."""
-    if hasattr(geom, "geoms"):          # Multi* or GeometryCollection
+    if hasattr(geom, "geoms"):  # Multi* or GeometryCollection
         for part in geom.geoms:
             _extract_coords(part, coords)
-    elif hasattr(geom, "exterior"):     # Polygon
+    elif hasattr(geom, "exterior"):  # Polygon
         coords.extend(geom.exterior.coords)
-    elif hasattr(geom, "coords"):       # LineString / Point
+    elif hasattr(geom, "coords"):  # LineString / Point
         coords.extend(geom.coords)
 
 
@@ -221,6 +221,94 @@ def load_longhurst(path: str | Path, code_col: str | None = None,
     return gdf[[code_col, name_col, "geometry"]].rename(
         columns={code_col: "province_code", name_col: "province_name"}
     )
+
+
+def load_basins(path: str | Path, name_col: str | None = None) -> gpd.GeoDataFrame:
+    """Load "Global Oceans and Seas" basin boundaries from a shapefile
+    (Flanders Marine Institute (2021). Global Oceans and Seas, version 1.
+    Available online at https://www.marineregions.org/. https://doi.org/10.14284/542).
+
+    Requires geopandas (``pip install "comfort-db[geo]"``).
+
+    Args:
+        path (str or Path): Path to the basins ``.shp`` file.
+        name_col (str): Basin name column. Auto-detected when ``None``.
+    Returns:
+        geopandas.GeoDataFrame: Basin boundaries with columns ``basin_name`` and ``geometry``.
+    """
+    # Check if geopandas is installed
+    try:
+        import geopandas as gpd
+    except ImportError:
+        raise ImportError(
+            "geopandas is required for load_basins. "
+            "Install it with: pip install \"comfort-db[geo]\""
+        )
+
+    # Read shapefile
+    gdf = gpd.read_file(path)
+
+    # Define basin name column (case-insensitive match)
+    if name_col is None:
+        cols_lower = {c.lower(): c for c in gdf.columns}
+        name_col = cols_lower.get("name")
+    if name_col is None:
+        raise ValueError(f"Could not detect name column in {list(gdf.columns)}. Pass name_col explicitly.")
+
+    return gdf[[name_col, "geometry"]].rename(columns={name_col: "basin_name"})
+
+
+def load_biomes(path: str | Path, biome_var: str) -> pd.DataFrame:
+    """Load Fay and McKinley (2014) global ocean biomes from a gridded NetCDF file.
+
+     Reference: Fay, A. R. and McKinley, G. A.: Global open-ocean biomes:
+     mean and temporal variability, Earth Syst. Sci. Data, 6, 273–284,
+     https://doi.org/10.5194/essd-6-273-2014, 2014.
+
+    Requires xarray (``pip install "comfort-db[grid]"``).
+
+    Args:
+        path (str or Path): Path to the biomes NetCDF file.
+        biome_var (str): Biome-ID variable (``"MeanBiomes"``, ``"CoreBiomes"``or
+            ``"TimeVaryingBiomes"``).
+    Returns:
+        pandas.DataFrame: Columns ``LATITUDE``, ``LONGITUDE``, ``label``
+        (and ``YEAR`` if biome_var=``"TimeVaryingBiomes"``).
+    """
+    # Check if xarray is installed
+    try:
+        import xarray as xr
+    except ImportError:
+        raise ImportError(
+            "xarray is required for load_biomes; "
+            "install it with: pip install \"comfort-db[grid]\""
+        )
+
+    # Read NetCDF file
+    ds = xr.open_dataset(path)
+
+    # Filter for the requested biome data
+    if biome_var not in ds.data_vars:
+        raise ValueError(
+            f"biome_var {biome_var!r} not found in {list(ds.data_vars)}. "
+            "Pass one of these explicitly."
+        )
+    da = ds[biome_var]
+
+    # Extract time dimension
+    extra_dims = [d for d in da.dims if d not in ("lat", "lon")]
+    time_dim = extra_dims[0] if extra_dims else None
+
+    # Formatting
+    df = da.to_dataframe(name="label").reset_index()  # to df
+    df = df.rename(columns={"lat": "LATITUDE", "lon": "LONGITUDE"})  # rename to library convention
+    df = df.dropna(subset=["label"])  # drop land/no-biome cells
+    out_cols = ["LATITUDE", "LONGITUDE", "label"]
+    if time_dim is not None:
+        # Add time dimension if present
+        df = df.rename(columns={time_dim: time_dim.upper()})
+        out_cols = ["LATITUDE", "LONGITUDE", time_dim.upper(), "label"]
+    return df[out_cols].reset_index(drop=True)
 
 
 def water_mass_masks(df: pd.DataFrame, regions: dict | str | Path | gpd.GeoDataFrame,
@@ -323,6 +411,88 @@ def water_mass_statistics(df: pd.DataFrame, param_cols: list[str] | str,
     return df.groupby(region_col)[param_cols].agg(["count", "mean", "std", "min", "max"])
 
 
+def region_bbox(regions: dict | str | Path | gpd.GeoDataFrame,
+                region_name_col: str = "name") -> tuple[float, float, float, float]:
+    """Return the lat/lon bounding box of one or more regions.
+
+    Intended to derive a bounding box for a cheap SQL query before an exact polygon refined region search,
+    see ``region=`` on :func:`comfort.io.load_comfort`/:func:`~comfort.io.read_parameter`/:func:`~comfort.io.subset_region`.
+
+    A region whose polygon crosses the antimeridian (+-180°) is inidcted by returning a lon_min that is
+    bigger than lon_max.
+
+    Args:
+        regions: Region definition(s), same formats as water_mass_masks.
+        region_name_col (str): Region name column. See water_mass_masks.
+    Returns:
+        tuple[float, float, float, float]: ``(lat_min, lat_max, lon_min, lon_max)``.
+    """
+    # Get a dict of (region_name, polygon)
+    named_regions = _parse_regions(regions, region_name_col)
+
+    # Collect every vertex longitude/latitude per region (handles Multi* parts too)
+    per_region_lons = []
+    all_lats = []
+    for _, poly in named_regions:
+        coords = []
+        _extract_coords(poly, coords)  # get coords of the polygon
+        per_region_lons.append([c[0] for c in coords])  # store lons as a list per region
+        all_lats.extend(c[1] for c in coords)  # store all lats as a simple list
+
+    # A vertex span > 180 degrees signals the polygon includes the antimeridian
+    includes_antimeridian = any(max(lons) - min(lons) > 180 for lons in per_region_lons)
+    if not includes_antimeridian:
+        # Take min/max longitude first per region, then across regions
+        lon_min = min(min(lons) for lons in per_region_lons)
+        lon_max = max(max(lons) for lons in per_region_lons)
+    else:
+        # Shift negative longitudes to [0,360] before taking min/max
+        shifted = [lon + 360 if lon < 0 else lon for lons in per_region_lons for lon in lons]
+        s_min, s_max = min(shifted), max(shifted)
+        lon_min = s_min if s_min <= 180 else s_min - 360  # project back to [-180, 180]
+        lon_max = s_max if s_max <= 180 else s_max - 360
+
+    return min(all_lats), max(all_lats), lon_min, lon_max
+
+
+def select_regions(regions: dict | str | Path | gpd.GeoDataFrame,
+                   names: str | list[str], region_name_col: str = "name") -> dict:
+    """Filter a water_mass_masks-compatible regions source for named region(s).
+
+    Args:
+        regions: Region definition(s), same format as water_mass_masks.
+        names (str or list[str]): Region name(s) to keep.
+        region_name_col (str): Region name column. See water_mass_masks.
+    Returns:
+        dict[str, shapely.Polygon]: Only the requested region(s).
+    Raises:
+        ValueError: If any requested name is not found.
+    """
+    # Ensure that region names are a list
+    if isinstance(names, str):
+        names = [names]
+
+    # Get (region-name, polygon) dict
+    named_regions = _parse_regions(regions, region_name_col)
+
+    # Filter for the requested regions
+    selected = {name: poly for name, poly in named_regions if name in names}
+
+    # Raise if a region name was not found
+    missing = set(names) - set(selected)
+    if missing:
+        raise ValueError(f"Region name(s) not found: {sorted(missing)}")
+
+    return selected
+
+
+def _resolve_name_col(columns, region_name_col):
+    """Return region_name_col, raising an error if it is not in columns."""
+    if region_name_col not in columns:
+        raise ValueError(f"Could not find region name column {region_name_col!r} in {list(columns)}.")
+    return region_name_col
+
+
 def _parse_regions(regions, region_name_col):
     """Return a list of ``(name, shapely.Polygon)`` tuples from any input format."""
     from shapely.geometry import Polygon
@@ -340,7 +510,7 @@ def _parse_regions(regions, region_name_col):
     if path is not None and path.suffix.lower() == ".csv":
         from shapely import wkt
         csv_df = pd.read_csv(path)
-        name_col = region_name_col if region_name_col in csv_df.columns else "name"
+        name_col = _resolve_name_col(csv_df.columns, region_name_col)
         return [
             (row[name_col], wkt.loads(row["geometry"]))
             for _, row in csv_df.iterrows()
@@ -356,15 +526,17 @@ def _parse_regions(regions, region_name_col):
                 "install it with: pip install \"comfort-db[geo]\""
             )
         gdf = gpd.read_file(path)
-        return [(row[region_name_col], row.geometry) for _, row in gdf.iterrows()]
+        name_col = _resolve_name_col(gdf.columns, region_name_col)
+        return [(row[name_col], row.geometry) for _, row in gdf.iterrows()]
 
-    # Return Series or df
+    # Regions as gpd
     try:
         import geopandas as gpd
         if isinstance(regions, gpd.GeoSeries):
             return list(regions.items())
         if isinstance(regions, gpd.GeoDataFrame):
-            return [(row[region_name_col], row.geometry) for _, row in regions.iterrows()]
+            name_col = _resolve_name_col(regions.columns, region_name_col)
+            return [(row[name_col], row.geometry) for _, row in regions.iterrows()]
     except ImportError:
         pass
 
@@ -416,44 +588,88 @@ def classify_from_grid(df: pd.DataFrame, grid_df: pd.DataFrame,
                        grid_lat_col: str = "LATITUDE",
                        grid_lon_col: str = "LONGITUDE",
                        label_col: str = "label",
-                       output_col: str = "label") -> pd.DataFrame:
-    """Classify observations by nearest-neighbour lookup against a labelled grid.
+                       output_col: str = "label",
+                       time_col: str | None = None,
+                       grid_time_col: str | None = None) -> pd.DataFrame:
+    """Classify observations against a labelled grid by nearest-neighbour lookup.
 
     Finds the closest grid point (Euclidean distance on radian-converted
     coordinates) and copies its label.
 
+    If *time_col* is given, each sample is first matched to its nearest
+    time step in *grid_time_col*. Then, spatial neighbours are searched
+    only in that time step.
+
     Args:
         df (pandas.DataFrame): Observation DataFrame with lat/lon columns.
         grid_df (pandas.DataFrame): Labelled grid (e.g. from
-            :func:`load_jenniges_provinces`).
+            :func:`load_jenniges_provinces` or :func:`load_biomes`).
         lat_col (str): Latitude column in *df*.
         lon_col (str): Longitude column in *df*.
         grid_lat_col (str): Latitude column in *grid_df*.
         grid_lon_col (str): Longitude column in *grid_df*.
         label_col (str): Label column in *grid_df*.
         output_col (str): Name of the new column added to the result.
+        time_col (str): Time column in *df* (e.g. year) to match against
+            *grid_time_col*. Omit for a purely spatial grid.
+        grid_time_col (str): Time column in *grid_df*. Defaults to
+            *time_col* if *time_col* is given.
     Returns:
         pandas.DataFrame: Copy of *df* with an added *output_col* column.
     """
+    result = df.copy()
+
+    # Spatial nearest neighbours (if no time_col is given)
+    if time_col is None:
+        result[output_col] = _nearest_labels(
+            obs_lon=df[lon_col].values,
+            obs_lat=df[lat_col].values,
+            grid_lon=grid_df[grid_lon_col].values,
+            grid_lat=grid_df[grid_lat_col].values,
+            grid_labels=grid_df[label_col].values,
+        )
+        return result
+
+    # Temporal nearest neighbours
+    grid_time_col = grid_time_col or time_col
+    grid_times = np.sort(grid_df[grid_time_col].unique().astype(float))  # all sorted grid times
+    obs_times = df[time_col].values.astype(float)  # all observation times
+    nearest_times = grid_times[np.abs(obs_times[:, None] - grid_times[None, :]).argmin(axis=1)]
+
+    # Compute spatial nearest neighbours per time step
+    labels = np.empty(len(df), dtype=grid_df[label_col].values.dtype)
+    for t in grid_times:
+        # Check if current time step has data
+        mask = nearest_times == t
+        if not mask.any():
+            continue
+
+        # Filter for current time step
+        grid_slice = grid_df[grid_df[grid_time_col] == t]
+
+        # Spatial nearest neighbours
+        labels[mask] = _nearest_labels(
+            obs_lon=df.loc[mask, lon_col].values,
+            obs_lat=df.loc[mask, lat_col].values,
+            grid_lon=grid_slice[grid_lon_col].values,
+            grid_lat=grid_slice[grid_lat_col].values,
+            grid_labels=grid_slice[label_col].values,
+        )
+    result[output_col] = labels
+    return result
+
+
+def _nearest_labels(obs_lon, obs_lat, grid_lon, grid_lat, grid_labels):
+    """Nearest-neighbour label lookup (Euclidean distance on radian-converted coordinates)."""
     from scipy.spatial import cKDTree
 
-    # Define grid coordinates in radians
-    grid_coords = np.column_stack([
-        np.radians(grid_df[grid_lon_col].values.astype(float)),
-        np.radians(grid_df[grid_lat_col].values.astype(float)),
-    ])
+    # Convert to radians
+    grid_coords = np.column_stack([np.radians(grid_lon.astype(float)), np.radians(grid_lat.astype(float))])
+    obs_coords = np.column_stack([np.radians(obs_lon.astype(float)), np.radians(obs_lat.astype(float))])
 
-    # Define observations coordinates in radians
-    obs_coords = np.column_stack([
-        np.radians(df[lon_col].values.astype(float)),
-        np.radians(df[lat_col].values.astype(float)),
-    ])
-
-    # Compute closest grid point
+    # Construct neighbourhood graph
     tree = cKDTree(grid_coords)
-    _, idxs = tree.query(obs_coords, k=1)
 
-    # Assemble result
-    result = df.copy()
-    result[output_col] = grid_df[label_col].values[idxs]
-    return result
+    # Retrun the one nearest neighbour for each observation
+    _, idxs = tree.query(obs_coords, k=1)
+    return grid_labels[idxs]
