@@ -33,7 +33,7 @@ bibliography: paper.bib
 
 ![TS](ts_oxygen_global.png)
 *Figure 1: Global temperature-salinity diagram (`comfort.plot`) 
-with isopycnals in kg $m^{-3}$ (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
+with isopycnals in $kg m^{-3}$ (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
 of oxygen observations from the COMFORT database. 
 Only quality-controlled (`QC_GOOD`) data are loaded, units are harmonised (`comfort.units`) and
 oxygen values that are approximately equal to their co-located absolute salinity are dropped (`flag_salinity_like_oxygen`). 
@@ -85,7 +85,7 @@ on radian-converted coastline coordinates, retrieves the five nearest candidate 
 vectorised haversine distances among them. The `classify_from_grid` function similarly performs a KDTree search, but only
 retrieves a single nearest-neighbour, without a subsequent refinement step. 
 Both functions approximate great-circle distance with Euclidean distance in radians, which is imprecise near the poles and the 
-antimeridian (+-180°).
+antimeridian (±180°).
 Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database.
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
