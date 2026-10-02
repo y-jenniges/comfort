@@ -10,9 +10,9 @@ tags:
   
 authors:
   - name: Yvonne Jenniges
-    affiliation: "1, 3"
+    affiliation: "1, 2"
   - name: Are Olsen
-    affiliation: "4"
+    affiliation: "3"
   - name: Boris Peter Koch
     affiliation: "2"
   - name: Sebastian Maneth
@@ -24,8 +24,6 @@ affiliations:
   - index: 2
     name: Alfred-Wegener-Institut, Helmholtz-Zentrum für Polar- und Meeresforschung, Germany
   - index: 3
-    name: MarDATA, Germany
-  - index: 4
     name: University of Bergen, Norway
 
 date: 03 September 2026
@@ -35,7 +33,7 @@ bibliography: paper.bib
 
 ![TS](ts_oxygen_global.png)
 *Figure 1: Global temperature-salinity diagram (`comfort.plot`) 
-with isopycnals in kg m$^{-3}$ (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
+with isopycnals in kg m^-3 (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
 of oxygen observations from the COMFORT database. 
 Only quality-controlled (`QC_GOOD`) data are loaded, units are harmonised (`comfort.units`) and
 oxygen values that are approximately equal to their co-located absolute salinity are dropped (`flag_salinity_like_oxygen`). 
@@ -87,7 +85,7 @@ on radian-converted coastline coordinates, retrieves the five nearest candidate 
 vectorised haversine distances among them. The `classify_from_grid` function similarly performs a KDTree search, but only
 retrieves a single nearest-neighbour, without a subsequent refinement step. 
 Both functions approximate great-circle distance with Euclidean distance in radians, which is imprecise near the poles and the 
-antimeridian ($\pm 180$°).
+antimeridian (+-180°).
 Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database.
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
@@ -130,7 +128,7 @@ Correctness was assessed via the tests, checks against manually computed
 unit conversions (`CONVERSION_REFERENCE` in `test/test_units.py`) and execution of all example scripts. 
 
 ## Acknowledgements
-The first author (Y.J.) is funded through the University of Bremen and 
-the Helmholtz School for Marine Data Science (MarDATA).
-This work has been kindly supported by computing infrastructure of 
-the Alfred-Wegener Institut, Helmholtz-Zentrum für Polar- und Meeresforschung.
+The first author (Y.J.) has been funded by the University of Bremen,  
+the Helmholtz School for Marine Data Science (MarDATA) and 
+the Alfred-Wegener-Institut, Helmholtz-Zentrum für Polar- und Meeresforschung, 
+which also provided the computing infrastructure for this work.
