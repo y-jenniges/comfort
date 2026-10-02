@@ -33,7 +33,7 @@ bibliography: paper.bib
 
 ![TS](ts_oxygen_global.png)
 *Figure 1: Global temperature-salinity diagram (`comfort.plot`) 
-with isopycnals in $kg m^{-3}$ (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
+with isopycnals in $kg~m^{-3}$ (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
 of oxygen observations from the COMFORT database. 
 Only quality-controlled (`QC_GOOD`) data are loaded, units are harmonised (`comfort.units`) and
 oxygen values that are approximately equal to their co-located absolute salinity are dropped (`flag_salinity_like_oxygen`). 
