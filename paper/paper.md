@@ -35,7 +35,7 @@ bibliography: paper.bib
 
 ![TS](ts_oxygen_global.png)
 *Figure 1: Global temperature-salinity diagram (`comfort.plot`) 
-with isopycnals in kg/m^3 (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
+with isopycnals in kg m$^{-3}$ (dashed lines, reference pressure 0 dbar, computed as density-anomaly) 
 of oxygen observations from the COMFORT database. 
 Only quality-controlled (`QC_GOOD`) data are loaded, units are harmonised (`comfort.units`) and
 oxygen values that are approximately equal to their co-located absolute salinity are dropped (`flag_salinity_like_oxygen`). 
@@ -57,7 +57,7 @@ Gridding is supported and optionally works with bathymetry data (e.g. GEBCO [@ge
 Moreover, the library supports general and field-specific exploratory data analysis through plotting functions, 
 an interactive dash app and functions to compute oceanographic profile and water mass statistics. 
 
-`comfort-db` bases on and extends code originally developed for [@jenniges2025], including parts of the gridding,
+`comfort-db` builds on and extends code originally developed for [@jenniges2025], including parts of the gridding,
 unit conversion, database and plotting routines.
 
 ## Statement of need
@@ -71,8 +71,8 @@ focus on scientific questions rather than repeated, error-prone data preprocessi
 ## State of the field
 A related library is `argopy` [@argopy2020] that enables data access, manipulation and visualisation of Argo float data. 
 However, the COMFORT database differs from Argo not only in file format (SQLite vs. NetCDF), but also in scope and structure: 
-It merges ten datasets into a station/profile hierarchy with own SQLite schema, quality flag conventions and unit definitions and intended conversions.
-A simple adapter to `argopy` would not cover this schema- and domain-specific functionality
+It merges ten datasets into a station/profile hierarchy with its own SQLite schema, quality flag conventions and unit definitions and intended conversions.
+A simple adapter to `argopy` would not cover this schema- and domain-specific functionality. 
 To our knowledge, no existing package offers a comparable reproducible interface to the COMFORT database.
 
 ## Software design
@@ -87,7 +87,7 @@ on radian-converted coastline coordinates, retrieves the five nearest candidate 
 vectorised haversine distances among them. The `classify_from_grid` function similarly performs a KDTree search, but only
 retrieves a single nearest-neighbour, without a subsequent refinement step. 
 Both functions approximate great-circle distance with Euclidean distance in radians, which is imprecise near the poles and the 
-antimeridian (+-180°).
+antimeridian ($\pm 180$°).
 Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database.
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
