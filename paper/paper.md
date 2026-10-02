@@ -14,19 +14,21 @@ authors:
   - name: Are Olsen
     affiliation: "3"
   - name: Boris Peter Koch
-    affiliation: "2"
+    affiliation: "2, 4"
   - name: Sebastian Maneth
     affiliation: "1"
 
 affiliations:
   - index: 1
-    name: University of Bremen, Germany
+    name: University of Bremen, Bibliothekstra{\ss}e 1, Bremen 28359, Germany
   - index: 2
-    name: Alfred-Wegener-Institut, Helmholtz-Zentrum für Polar- und Meeresforschung, Germany
+    name: Alfred-Wegener-Institut, Helmholtz-Zentrum für Polar- und Meeresforschung, Am Handelshafen 12, Bremerhaven 27570, Germany
   - index: 3
-    name: University of Bergen, Norway
+    name: University of Bergen, Postboks 7800, Bergen 5020, Norway
+  - index: 4
+    name: University of Applied Sciences, An der Karlstadt 8, Bremerhaven 27568, Germany
 
-date: 03 September 2026
+date: 01 October 2026
 
 bibliography: paper.bib
 ---
