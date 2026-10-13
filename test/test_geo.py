@@ -7,8 +7,12 @@ from comfort.geo import (
     along_track_distance,
     classify_from_grid,
     distance_to_coast,
+    load_biomes,
     load_jenniges_provinces,
     load_longhurst,
+    load_basins,
+    region_bbox,
+    select_regions,
     water_mass_masks,
     water_mass_statistics,
 )
@@ -18,6 +22,12 @@ try:
     import geopandas
 except ImportError:
     _has_geopandas = False
+
+_has_xarray = True
+try:
+    import xarray
+except ImportError:
+    _has_xarray = False
 
 
 class TestDistanceToCoast:
@@ -283,6 +293,97 @@ class TestWaterMassStatistics:
         assert ("VAL", "mean") in result.columns
 
 
+class TestRegionBbox:
+    _regions = {
+        "north": [(0, 40), (10, 40), (10, 50), (0, 50)],
+        "south": [(0, -50), (10, -50), (10, -40), (0, -40)],
+    }
+
+    # Union bbox spans both named regions
+    def test_union_bbox(self):
+        result = region_bbox(self._regions)
+        assert result == (-50.0, 50.0, 0.0, 10.0)
+
+    # Bbox of a single region
+    def test_single_region_bbox(self):
+        result = region_bbox({"north": self._regions["north"]})
+        assert result == (40.0, 50.0, 0.0, 10.0)
+
+    # Works with a shapely polygon wrapped in a dict
+    def test_shapely_polygon_input(self):
+        from shapely.geometry import Polygon
+        result = region_bbox({"box": Polygon([(1, 2), (3, 2), (3, 4), (1, 4)])})
+        assert result == (2.0, 4.0, 1.0, 3.0)
+
+    # A region crossing the antimeridian (stored as two parts near +-180, as a real
+    # Pacific basin shapefile would be) wraps correctly and returns lon_min > lon_max
+    def test_antimeridian_crossing_region(self):
+        from shapely.geometry import MultiPolygon, Polygon
+        pacific_strip = MultiPolygon([
+            Polygon([(170, -10), (180, -10), (180, 10), (170, 10)]),
+            Polygon([(-180, -10), (-170, -10), (-170, 10), (-180, 10)]),
+        ])
+        result = region_bbox({"pacific_strip": pacific_strip})
+        assert result == (-10.0, 10.0, 170.0, -170.0)
+
+
+class TestSelectRegions:
+    _regions = {
+        "north": [(0, 40), (10, 40), (10, 50), (0, 50)],
+        "south": [(0, -50), (10, -50), (10, -40), (0, -40)],
+    }
+
+    # Selecting one name returns just that region
+    def test_selects_single_name(self):
+        result = select_regions(self._regions, "north")
+        assert set(result) == {"north"}
+
+    # Selecting multiple names returns all of them
+    def test_selects_multiple_names(self):
+        result = select_regions(self._regions, ["north", "south"])
+        assert set(result) == {"north", "south"}
+
+    # An unknown region name raises an error
+    def test_raises_on_missing_name(self):
+        with pytest.raises(ValueError, match="not found"):
+            select_regions(self._regions, "pacific")
+
+    # Explicit region_name_col selects a non-default column (e.g. Longhurst's "ProvDescr")
+    @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+    def test_explicit_region_name_col_selects_non_default_column(self, tmp_path):
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+
+        # Dummy Longhurst-style provinces
+        gdf = gpd.GeoDataFrame({
+            "ProvCode": [1, 2],
+            "ProvDescr": ["North Atlantic Drift", "Gulf Stream"],
+            "geometry": [
+                Polygon([(0, 0), (10, 0), (10, 10), (0, 10)]),
+                Polygon([(10, 0), (20, 0), (20, 10), (10, 10)]),
+            ],
+        }, crs="EPSG:4326")
+        path = tmp_path / "longhurst.shp"
+        gdf.to_file(path)
+
+        # Passing region_name_col should override its default value ("name")
+        result = select_regions(path, "Gulf Stream", region_name_col="ProvDescr")
+        assert set(result) == {"Gulf Stream"}
+
+    # A missing default "name" column raises an error
+    @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+    def test_raises_error_when_name_column_not_found(self):
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+
+        gdf = gpd.GeoDataFrame({
+            "ProvDescr": ["box"],
+            "geometry": [Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])],
+        })
+        with pytest.raises(ValueError, match="Could not find region name column"):
+            select_regions(gdf, "box")
+
+
 @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
 class TestLoadLonghurst:
     @staticmethod
@@ -324,6 +425,55 @@ class TestLoadLonghurst:
         path = self._write_shapefile(tmp_path, code_col="foo", name_col="bar")
         with pytest.raises(ValueError, match="Could not detect"):
             load_longhurst(path)
+
+
+@pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+class TestLoadBasins:
+    @staticmethod
+    def _write_shapefile(tmp_path, name_col="name"):
+        # Dummy Global Oceans and Seas (GOaS) data
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+
+        gdf = gpd.GeoDataFrame({
+            name_col: ["North Atlantic Ocean", "South Atlantic Ocean"],
+            "geometry": [
+                Polygon([(-80, 0), (0, 0), (0, 65), (-80, 65)]),
+                Polygon([(-70, -60), (20, -60), (20, 0), (-70, 0)]),
+            ],
+        }, crs="EPSG:4326")
+        path = tmp_path / "goas.shp"
+        gdf.to_file(path)
+        return path
+
+    # Column name (name) is auto-detected case-insensitively and renamed
+    def test_auto_detects_columns(self, tmp_path):
+        result = load_basins(self._write_shapefile(tmp_path))
+        assert list(result.columns) == ["basin_name", "geometry"]
+
+    # Basin names survive the read/rename process
+    def test_values_preserved(self, tmp_path):
+        result = load_basins(self._write_shapefile(tmp_path))
+        assert set(result["basin_name"]) == {"North Atlantic Ocean", "South Atlantic Ocean"}
+
+    # name_col overrides auto-detection
+    def test_explicit_column_name(self, tmp_path):
+        path = self._write_shapefile(tmp_path, name_col="label")
+        result = load_basins(path, name_col="label")
+        assert "basin_name" in result.columns
+
+    # No name column, auto-detected or explicit, raises an error
+    def test_raises_when_column_not_found(self, tmp_path):
+        path = self._write_shapefile(tmp_path, name_col="bar")
+        with pytest.raises(ValueError, match="Could not detect"):
+            load_basins(path)
+
+    # The result composes with water_mass_masks
+    def test_composes_with_water_mass_masks(self, tmp_path):
+        gdf = load_basins(self._write_shapefile(tmp_path))
+        obs = pd.DataFrame({"LATITUDE": [30.0, -30.0], "LONGITUDE": [-40.0, -20.0]})
+        result = water_mass_masks(obs, gdf, region_name_col="basin_name")
+        assert list(result["region"]) == ["North Atlantic Ocean", "South Atlantic Ocean"]
 
 
 class TestLoadJennigesProvinces:
@@ -374,6 +524,76 @@ class TestLoadJennigesProvinces:
         path.write_text("LATITUDE,LONGITUDE\n50,30\n")
         with pytest.raises(ValueError, match="label"):
             load_jenniges_provinces(path)
+
+
+@pytest.mark.skipif(not _has_xarray, reason="xarray not installed ([grid] extra)")
+class TestLoadBiomes:
+    @staticmethod
+    def _write_biomes_nc(tmp_path, with_time=False):
+        # Generate dummy Fay and McKinley biome data
+        import xarray as xr
+
+        lat = np.array([-10.0, 0.0, 10.0])
+        lon = np.array([-30.0, -20.0])
+        if with_time:
+            data = np.array([[[1, 2], [np.nan, 3], [2, 2]],
+                              [[1, 1], [3, 3], [2, np.nan]]])
+            da = xr.DataArray(
+                data, dims=("time", "lat", "lon"),
+                coords={"time": [0, 1], "lat": lat, "lon": lon},
+            )
+        else:
+            data = np.array([[1, 2], [np.nan, 3], [2, 2]])
+            da = xr.DataArray(data, dims=("lat", "lon"), coords={"lat": lat, "lon": lon})
+        ds = xr.Dataset({"biomes": da})
+        path = tmp_path / "biomes.nc"
+        ds.to_netcdf(path)
+        return path
+
+    # Output is flattened to LATITUDE, LONGITUDE, label
+    def test_returns_flattened_dataframe(self, tmp_path):
+        result = load_biomes(self._write_biomes_nc(tmp_path), biome_var="biomes")
+        assert list(result.columns) == ["LATITUDE", "LONGITUDE", "label"]
+
+    # NaN cells (e.g. land) are dropped
+    def test_drops_nan_cells(self, tmp_path):
+        result = load_biomes(self._write_biomes_nc(tmp_path), biome_var="biomes")
+        assert len(result) == 5
+        assert result["label"].notna().all()
+
+    # Result composes with classify_from_grid for point classification
+    def test_composes_with_classify_from_grid(self, tmp_path):
+        grid = load_biomes(self._write_biomes_nc(tmp_path), biome_var="biomes")
+        obs = pd.DataFrame({"LATITUDE": [0.1], "LONGITUDE": [-19.9]})
+        result = classify_from_grid(obs, grid)
+        assert result["label"].iloc[0] == 3
+
+    # A time-varying mask is returned in long form - one row per grid
+    # cell per step, with an extra dimension column
+    def test_time_dimension_returns_long_form(self, tmp_path):
+        path = self._write_biomes_nc(tmp_path, with_time=True)
+        result = load_biomes(path, biome_var="biomes")
+        assert list(result.columns) == ["LATITUDE", "LONGITUDE", "TIME", "label"]
+        assert len(result) == 10
+        assert set(result["TIME"]) == {0, 1}
+
+    # The long-form output composes with classify_from_grid's time_col to
+    # match each observation to its own step
+    def test_time_aware_composes_with_classify_from_grid(self, tmp_path):
+        path = self._write_biomes_nc(tmp_path, with_time=True)
+        grid = load_biomes(path, biome_var="biomes")
+        obs = pd.DataFrame({"LATITUDE": [0.1], "LONGITUDE": [-19.9], "TIME": [1]})
+        result = classify_from_grid(obs, grid, time_col="TIME")
+        assert result["label"].iloc[0] == 3
+
+    # An unknown biome variable raises an error
+    def test_raises_when_variable_not_found(self, tmp_path):
+        import xarray as xr
+        ds = xr.Dataset({"foo": xr.DataArray([[1]], dims=("lat", "lon"), coords={"lat": [0.0], "lon": [0.0]})})
+        path = tmp_path / "bad.nc"
+        ds.to_netcdf(path)
+        with pytest.raises(ValueError, match="not found"):
+            load_biomes(path, biome_var="missing")
 
 
 class TestClassifyFromGrid:
@@ -428,3 +648,44 @@ class TestClassifyFromGrid:
                           index=[10, 20])
         result = classify_from_grid(df, self._grid())
         assert list(result.index) == [10, 20]
+
+    @staticmethod
+    def _time_grid():
+        # Temporal grid
+        return pd.DataFrame({
+            "LATITUDE":  [50.0, 55.0, 60.0, 50.0, 55.0, 60.0],
+            "LONGITUDE": [-30.0, -25.0, -20.0, -30.0, -25.0, -20.0],
+            "YEAR":      [2000, 2000, 2000, 2010, 2010, 2010],
+            "label":     [1, 2, 3, 10, 20, 30],
+        })
+
+    # time_col restricts the spatial lookup to the observation's own year
+    def test_time_aware_matches_own_year(self):
+        df = pd.DataFrame({"LATITUDE": [50.0], "LONGITUDE": [-30.0], "YEAR": [2000]})
+        result = classify_from_grid(df, self._time_grid(), time_col="YEAR")
+        assert result["label"].iloc[0] == 1
+
+    # A different year matches a different grid slice, same location
+    def test_time_aware_matches_different_year(self):
+        df = pd.DataFrame({"LATITUDE": [50.0], "LONGITUDE": [-30.0], "YEAR": [2010]})
+        result = classify_from_grid(df, self._time_grid(), time_col="YEAR")
+        assert result["label"].iloc[0] == 10
+
+    # An observation outside the grid's time range snaps to the nearest available year
+    def test_time_aware_snaps_to_nearest_year(self):
+        df = pd.DataFrame({"LATITUDE": [50.0], "LONGITUDE": [-30.0], "YEAR": [2023]})
+        result = classify_from_grid(df, self._time_grid(), time_col="YEAR")
+        assert result["label"].iloc[0] == 10
+
+    # grid_time_col lets the grid use a different time column name than the observations
+    def test_time_aware_custom_grid_time_col(self):
+        grid = self._time_grid().rename(columns={"YEAR": "grid_year"})
+        df = pd.DataFrame({"LATITUDE": [50.0], "LONGITUDE": [-30.0], "YEAR": [2000]})
+        result = classify_from_grid(df, grid, time_col="YEAR", grid_time_col="grid_year")
+        assert result["label"].iloc[0] == 1
+
+    # Observations from different years in one call each get their own year's label
+    def test_time_aware_mixed_years_in_one_call(self):
+        df = pd.DataFrame({"LATITUDE": [50.0, 55.0], "LONGITUDE": [-30.0, -25.0], "YEAR": [2000, 2010]})
+        result = classify_from_grid(df, self._time_grid(), time_col="YEAR")
+        assert list(result["label"]) == [1, 20]
