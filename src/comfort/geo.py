@@ -261,19 +261,19 @@ def load_basins(path: str | Path, name_col: str | None = None) -> gpd.GeoDataFra
 def load_biomes(path: str | Path, biome_var: str) -> pd.DataFrame:
     """Load Fay and McKinley (2014) global ocean biomes from a gridded NetCDF file.
 
-     Reference: Fay, A. R. and McKinley, G. A.: Global open-ocean biomes:
-     mean and temporal variability, Earth Syst. Sci. Data, 6, 273–284,
-     https://doi.org/10.5194/essd-6-273-2014, 2014.
+    Reference: Fay, A. R. and McKinley, G. A.: Global open-ocean biomes:
+    mean and temporal variability, Earth Syst. Sci. Data, 6, 273–284,
+    https://doi.org/10.5194/essd-6-273-2014, 2014.
 
     Requires xarray (``pip install "comfort-db[grid]"``).
 
     Args:
         path (str or Path): Path to the biomes NetCDF file.
-        biome_var (str): Biome-ID variable (``"MeanBiomes"``, ``"CoreBiomes"``or
+        biome_var (str): Biome-ID variable (``"MeanBiomes"``, ``"CoreBiomes"`` or
             ``"TimeVaryingBiomes"``).
     Returns:
         pandas.DataFrame: Columns ``LATITUDE``, ``LONGITUDE``, ``label``
-        (and ``YEAR`` if biome_var=``"TimeVaryingBiomes"``).
+        (and ``YEAR`` if *biome_var* is ``"TimeVaryingBiomes"``).
     """
     # Check if xarray is installed
     try:

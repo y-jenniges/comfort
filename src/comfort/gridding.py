@@ -685,7 +685,7 @@ class Grid(_BaseGrid):
     def bin(self, df: pd.DataFrame, value_col: str, agg: str | list[str] ="mean") -> pd.DataFrame:
         """Bin *df* onto this grid's spatial cells and time steps, aggregating
         *value_col* per cell. Usable for data already in memory (e.g. after ``load_comfort``),
-         not in the database.
+        not in the database.
 
         Args:
             df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M,
