@@ -1,0 +1,101 @@
+# Build instructions
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Metadata and requirements
+[project]
+name = "comfort-db"
+version = "0.1.0"
+description = "Helper library for working with the COMFORT oceanographic dataset (SQLite)"
+authors = [{ name = "Yvonne Jenniges", email = "yvonne.jenniges@gmail.com" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["oceanography", "hydrography", "SQLite", "COMFORT", "WOD"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "gsw>=3.6.16",
+    "python-dateutil>=2.8.2",
+]
+
+# Optional dependencies
+[project.optional-dependencies]
+plot = [
+    "matplotlib>=3.8.1",
+    "seaborn>=0.13",
+]
+geo = [
+    "shapely>=2.0",
+    "geopandas>=0.14.4",
+    "cartopy>=0.22",
+]
+grid = [
+    "xarray>=2023.1",
+    "netcdf4>=1.6",
+]
+scale = [
+    "scikit-learn>=1.2",
+]
+dash = [
+    "dash>=2.14",
+    "dash-bootstrap-components>=1.5",
+    "plotly>=5.18",
+]
+docs = [
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
+]
+all = [
+    "comfort-db[plot]",
+    "comfort-db[geo]",
+    "comfort-db[grid]",
+    "comfort-db[scale]",
+    "comfort-db[dash]",
+    "comfort-db[docs]",
+]
+test = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "openpyxl>=3.1",
+    "python-dotenv>=1.0",
+]
+dev = [
+    "comfort-db[all]",
+    "comfort-db[test]",
+]
+
+# Links shown on PyPI
+[project.urls]
+Repository = "https://github.com/y-jenniges/comfort"
+Issues = "https://github.com/y-jenniges/comfort/issues"
+
+# Directory of packages
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Include SQL scripts in the build
+[tool.setuptools.package-data]
+"comfort.database" = ["sql_scripts/*.sql"]
+
+# Test suite settings
+[tool.pytest.ini_options]
+testpaths = ["test"]  # test dir
+pythonpath = ["src"]  # source dir
+tmp_path_retention_policy = "failed"  # only keep temp dirs if tests fail
+markers = [
+    "needs_bathymetry: Tests that require a real bathymetry NetCDF file (skipped by default)",
+]  # register bathymetry marker
