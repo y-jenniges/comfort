@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](python_badge)
 
-Python library for working with the [COMFORT](https://www.doi.org/10.11582/2022.00039)[1] oceanographic SQLite database. 
+Python library for working with the [COMFORT](https://www.doi.org/10.11582/2022.00039)[1] oceanographic SQLite dataset. 
 
 `comfort-db` wraps database access, preprocessing and basic analysis utilities into one library. 
 This includes filtering for quality and space-time ranges, unit conversions, spatiotemporal gridding, profile and water-mass analysis, 
@@ -12,7 +12,7 @@ geospatial utilities, scaling, plotting and visualisation using a dashboard.
 The data structure broadly follows oceanographic ship measurement practice: 
 At a latitude, longitude and time, a station defines where measurements were taken.
 At a station, profiles are measured, i.e. a parameter like temperature at different depths with a specific instrument.
-There can be multiple profiles at the same station, though in the COMFORT database, it is mostly one profile per station. 
+There can be multiple profiles at the same station, though in the COMFORT dataset, it is mostly one profile per station. 
 
 This library bases on and extends code developed in [3], including parts of the gridding, unit conversion, analysis and plotting 
 routines.
@@ -98,7 +98,7 @@ pip install -e ".[docs]"
 sphinx-build documentation/source documentation/build/html
 ```
 
-Runnable scripts (requiring the COMFORT database), covering every module, live in [`examples/`](examples/).
+Runnable scripts (requiring the COMFORT dataset), covering every module, live in [`examples/`](examples/).
 
 ---
 
@@ -121,7 +121,7 @@ If you use `comfort-db` in published work, please cite the COMFORT dataset [1] a
 ```bibtex
 @article{jenniges_inprep,
     author = {Yvonne Jenniges and Are Olsen and Boris Peter Koch and Sebastian Maneth},
-    title = {{comfort-db}: A Python toolkit to access, preprocess and explore the oceanographic COMFORT database},
+    title = {{comfort-db}: A Python toolkit to access, preprocess and explore the oceanographic COMFORT dataset},
     journal = {Journal of Open Source Software},
     year = {in prep.},
 }
