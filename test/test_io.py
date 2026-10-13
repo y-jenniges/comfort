@@ -320,6 +320,58 @@ class TestSubsetRegion:
         r["VAL"] = 99.0
         assert df["VAL"].iloc[1] != 99.0
 
+    # region= filters to points inside an arbitrary polygon, not just a box
+    def test_region_filter(self):
+        region = {"box": [(8, 15), (12, 15), (12, 25), (8, 25)]}
+        r = subset_region(self._df(), region=region)
+        assert list(r["LATITUDE"]) == [20.0]
+
+    # An explicit box and region= combine (intersect), not override each other
+    def test_region_and_box_combine(self):
+        region = {"box": [(0, 0), (20, 0), (20, 40), (0, 40)]}
+        r = subset_region(self._df(), lat_min=25.0, region=region)
+        assert list(r["LATITUDE"]) == [30.0]
+
+    # A region requested with LATITUDE/LONGITUDE absent warns and is skipped, not a crash
+    def test_region_missing_columns_warns(self, caplog):
+        region = {"box": [(8, 15), (12, 15), (12, 25), (8, 25)]}
+        df = self._df().drop(columns=["LATITUDE", "LONGITUDE"])
+        with caplog.at_level(logging.WARNING):
+            r = subset_region(df, region=region)
+        assert len(r) == 3
+        assert "Region filter requested" in caplog.text
+
+    # A region crossing the antimeridian (e.g. a Pacific basin stored as two parts
+    # near +-180) keeps points on both sides of the dateline, not just one
+    def test_region_crossing_antimeridian(self):
+        from shapely.geometry import MultiPolygon, Polygon
+        pacific_strip = MultiPolygon([
+            Polygon([(170, -10), (180, -10), (180, 10), (170, 10)]),
+            Polygon([(-180, -10), (-170, -10), (-170, 10), (-180, 10)]),
+        ])
+        df = pd.DataFrame({
+            "LATITUDE": [0.0, 0.0, 0.0],
+            "LONGITUDE": [175.0, -175.0, 0.0],
+            "VAL": [1.0, 2.0, 3.0],
+        })
+        r = subset_region(df, region={"pacific_strip": pacific_strip})
+        assert set(r["LONGITUDE"]) == {175.0, -175.0}
+
+    # Explicit lon_min/lon_max combined with an antimeridian-wrapping region are both applied
+    def test_region_crossing_antimeridian_with_explicit_lon(self):
+        from shapely.geometry import MultiPolygon, Polygon
+        pacific_strip = MultiPolygon([
+            Polygon([(170, -10), (180, -10), (180, 10), (170, 10)]),
+            Polygon([(-180, -10), (-170, -10), (-170, 10), (-180, 10)]),
+        ])
+        df = pd.DataFrame({
+            "LATITUDE": [0.0, 0.0],
+            "LONGITUDE": [175.0, -175.0],
+            "VAL": [1.0, 2.0],
+        })
+        r = subset_region(df, lon_min=-180.0, lon_max=0.0, region={"pacific_strip": pacific_strip})
+        assert list(r["LONGITUDE"]) == [-175.0]
+
 
 class TestLoadComfort:
     # as_xarray=False returns a dict keyed by parameter name
@@ -373,6 +425,14 @@ class TestLoadComfort:
     # lat_min restricts the returned data to the matching station's rows
     def test_spatial_filter(self, comfort_db):
         result = load_comfort(comfort_db, lat_min=50.0, as_xarray=False)
+        # Only station 2's profile (lat=55) should survive
+        assert result["NITRATE"]["PROFILE_NUMBER"].nunique() == 1
+        assert result["NITRATE"]["LATITUDE"].iloc[0] == 55.0
+
+    # region restricts the returned data to an arbitrary polygon (no lat/lon box needed)
+    def test_region_filter(self, comfort_db):
+        region = {"box": [(-25, 50), (-15, 50), (-15, 60), (-25, 60)]}
+        result = load_comfort(comfort_db, region=region, as_xarray=False)
         # Only station 2's profile (lat=55) should survive
         assert result["NITRATE"]["PROFILE_NUMBER"].nunique() == 1
         assert result["NITRATE"]["LATITUDE"].iloc[0] == 55.0
@@ -696,6 +756,29 @@ class TestReadParameter:
         assert len(df) == 3
         assert (df["PROFILE_NUMBER"] == 1).all()
         assert (df["LATITUDE"] == 55.0).all()
+
+    # region restricts rows to the matching station via an arbitrary polygon
+    def test_region_filter(self, comfort_db):
+        conn = sqlite3.connect(comfort_db)
+        region = {"box": [(-25, 50), (-15, 50), (-15, 60), (-25, 60)]}
+        df = read_parameter(conn, "NITRATE", region=region)
+        conn.close()
+        assert len(df) == 3
+        assert (df["LATITUDE"] == 55.0).all()
+
+    # A wrapped region box and explicit lon bounds both produce SQL conditions (ANDed)
+    def test_wrapped_region_box_and_explicit_lon_are_anded(self):
+        from comfort.io import _append_geo_conditions
+        conditions, params = [], []
+        _append_geo_conditions(
+            conditions, params, "s.", "s.", "p.", "s.",
+            None, None, -180.0, 0.0, None, None, None, None,
+            region_box=(-10.0, 10.0, 170.0, -170.0),
+        )
+        assert "s.LONGITUDE >= ?" in conditions
+        assert "s.LONGITUDE <= ?" in conditions
+        assert "(s.LONGITUDE >= ? OR s.LONGITUDE <= ?)" in conditions
+        assert params == [-180.0, 0.0, -10.0, 10.0, 170.0, -170.0]
 
     # extra_station_cols pulls additional station columns (e.g. CRUISE_ID)
     def test_extra_station_cols(self, comfort_db):
