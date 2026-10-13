@@ -99,11 +99,11 @@ is available through optional installs (`plot`, `geo`, `grid`, `scale`, `dash`).
 need database access and preprocessing.
 
 Some processing steps require a single parameter value per spatio-temporal location, which is not guaranteed in the COMFORT dataset.
-For example, there can be different instruments and multiple conductivity-temperature-depth (CTD) bottles at the same time, depth and coordinates  
+For example, there can be different instruments and multiple bottles on a conductivity-temperature-depth (CTD) rosette at the same time, depth and coordinates. 
 Also, there are measurements that were contributed by more than one of the merged source datasets under different station IDs.
 Therefore, `average_duplicate_locations` averages the records of each parameter by latitude, longitude, depth and time, 
 irrespective of station ID, profile, instrument or bottle number. 
-Records that the dataset itself flagged as duplicates (SQF=-1) can be removed by applying the `QC_GOOD` quality filter.
+Records that the dataset itself flagged as duplicates (PQF2=-1) can be removed by applying the `QC_GOOD` quality filter.
 When auxiliary temperature and salinity are added to another parameter table for unit conversions, they are first 
 averaged by station and depth (`io._read_with_geo`), which likewise averages all profiles, instruments and bottles of a
 station into one representative value. 
