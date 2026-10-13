@@ -16,10 +16,10 @@ import logging
 import os
 import sys
 from pathlib import Path
-
 from dotenv import load_dotenv
 
 import comfort
+from comfort.database import get_num_samples
 from comfort.gridding import average_duplicate_locations
 from comfort.physics import add_teos10_variables
 from comfort.plot import plot_ts_diagram
@@ -38,9 +38,14 @@ def main():
         sys.exit("COMFORT_DB_PATH is not set. Point it to your COMFORT SQLite database.")
 
     with comfort.connect(db_path) as conn:
+        # Get total oxygen count
+        num_observations = get_num_samples(conn=conn, table_name="P_OXYGEN")
+        print(f"Total number of oxygen observations: {num_observations}")
+
+        # Init the units converter
         converter = UnitsConverter.from_connection(conn)
 
-        # Load global data with SQL-level QC filtering; oxygen is converted
+        # Load global data with SQL-level QC filtering, oxygen is converted
         # to umol/kg on load (SQL-joined co-located T/S, App. C densities)
         log.info("Loading TEMPERATURE, SALINITY, OXYGEN (global, QC_GOOD)...")
         raw = comfort.load_comfort(
@@ -78,6 +83,10 @@ def main():
 
     # Add absolute salinity and conservative temperature (needed for isopycnals)
     df = add_teos10_variables(df, sp_col="SALINITY", t_col="TEMPERATURE", pressure_col="LEV_DBAR")
+
+    # Get count of remaining oxygen observations
+    num_remaining_observations =len(df.dropna())
+    print(f"Remaining number of oxygen observations: {num_remaining_observations}")
 
     # Global T-S diagram with isopycnal contours, coloured by oxygen concentration
     ax = plot_ts_diagram(
