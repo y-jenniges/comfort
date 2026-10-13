@@ -1,5 +1,4 @@
-"""Water-mass classification and characterisation, distance to coast and
-province assignment from ``comfort.geo``.
+"""Water-mass classification and characterisation, distance to coast and province assignment from ``comfort.geo``.
 
 Requires:
     COMFORT_DB_PATH - path to the COMFORT SQLite database
@@ -7,9 +6,11 @@ Requires:
 Optional:
     LONGHURST_SHP_PATH - path to the Longhurst provinces shapefile (marineregions.org)
     JENNIGES_CSV_PATH  - path to cluster_set.csv (Zenodo record 15201767)
+    BASINS_SHP_PATH    - path to the Global Oceans and Seas shapefile (marineregions.org)
+    FAY_NC_PATH        - path to the Fay & McKinley (2014) biomes NetCDF file (https://essd.copernicus.org/articles/6/273/2014/)
 
 Install extras:
-    pip install "comfort-db[geo]"
+    pip install "comfort-db[geo,grid]" (add [plot] too for the basin-filter map check)
 """
 from __future__ import annotations
 
@@ -17,13 +18,17 @@ import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+import pandas as pd
 
 import comfort
 from comfort.geo import (
     classify_from_grid,
     distance_to_coast,
+    load_biomes,
     load_jenniges_provinces,
     load_longhurst,
+    load_basins,
+    select_regions,
     water_mass_masks,
     water_mass_statistics,
 )
@@ -128,3 +133,89 @@ if __name__ == "__main__":
         print(stats_j.head(10).to_string())
     else:
         print("Skipped - set JENNIGES_CSV_PATH to cluster_set.csv to run.")
+
+    # --- Ocean basins (requires GOaS shapefile from marineregions.org) ---
+    print("\n=== Ocean basins ===")
+    basins_path = os.environ.get("BASINS_SHP_PATH")
+    if basins_path and Path(basins_path).exists():
+        gdf_basins = load_basins(basins_path)  # load basins
+        print(f"Loaded {len(gdf_basins)} basins")
+        print(gdf_basins[["basin_name"]].head(10).to_string(index=False), "\n")
+
+        # Map data to basins
+        df_basins = water_mass_masks(df_wm, gdf_basins, region_name_col="basin_name")
+        print(df_basins["region"].value_counts().head(10).to_string(), "\n")
+
+        # Per-basin statistics
+        stats_basins = water_mass_statistics(
+            df_basins, param_cols=["NITRATE", "TEMPERATURE", "SALINITY", "sigma0", "spiciness0"],
+        )
+        print(stats_basins.head(10).to_string())
+    else:
+        print("Skipped - set BASINS_SHP_PATH to the Global Oceans and Seas .shp file to run.")
+
+    # --- Loading data from one named basin, no lat/lon box needed (requires GOaS shapefile) ---
+    print("\n=== load_comfort(region=...) - basin filtering without a lat/lon box ===")
+    if basins_path and Path(basins_path).exists():
+        basin_name = "North Atlantic Ocean"
+
+        # Load one basin
+        with comfort.connect(db_path) as conn:
+            basin_dfs = comfort.load_comfort(
+                conn,
+                parameters=["NITRATE"],
+                quality_flags=comfort.QC_GOOD,
+                region=select_regions(basins_path, basin_name),
+                as_xarray=False,
+            )
+        print(f"{basin_name}: {len(basin_dfs['NITRATE'])} NITRATE rows")
+
+        # Visual check: The filtered samples should stay within the basin
+        try:
+            from comfort.plot import plot_spatial_distribution
+        except ImportError:
+            print("Install comfort-db[plot] to save a spatial-distribution map of the filtered data.")
+        else:
+            out_path = f"output/{basin_name.replace(' ', '_').lower()}_nitrate_map.png"
+            plot_spatial_distribution(basin_dfs["NITRATE"], colorbar_label=f"NITRATE samples ({basin_name})",
+                                      save_as=out_path)
+            print(f"Saved spatial check to {out_path}")
+    else:
+        print("Skipped - set BASINS_SHP_PATH to the Global Oceans and Seas .shp file to run.")
+
+    # --- Fay and McKinley (2014) biomes (requires their gridded biomes NetCDF file) ---
+    print("\n=== Fay and McKinley biomes ===")
+    biomes_path = os.environ.get("FAY_NC_PATH")
+    if biomes_path and Path(biomes_path).exists():
+        # Load biomes
+        grid_b = load_biomes(biomes_path, biome_var="MeanBiomes")
+        print(f"Loaded {len(grid_b)} grid cells\n")
+
+        # Map data to biomes
+        df_b = classify_from_grid(df_wm, grid_b)
+        print(df_b["label"].value_counts().head(10).to_string(), "\n")
+
+        # Per-biome statistics
+        stats_b = water_mass_statistics(
+            df_b, param_cols=["NITRATE", "TEMPERATURE", "SALINITY", "sigma0", "spiciness0"],
+            region_col="label",
+        )
+        print(stats_b.head(10).to_string())
+
+        # Time-resolved variant
+        # (for outside-grid-range years, observations are still matched to nearest available year)
+        try:
+            # Load time-varying biomes
+            grid_tv = load_biomes(biomes_path, biome_var="TimeVaryingBiomes")
+        except ValueError:
+            print("\nNo time-varying biome variable in this file - skipping time-resolved demo.")
+        else:
+            print(f"\nTime-resolved: {len(grid_tv)} grid cells across {grid_tv['YEAR'].nunique()} years")
+            # Extract the year info of the data
+            df_wm_y = df_wm.assign(YEAR=pd.to_datetime(df_wm["DATEANDTIME"]).dt.year)
+
+            # Map data to time-varying biomes
+            df_tv = classify_from_grid(df_wm_y, grid_tv, time_col="YEAR")
+            print(df_tv["label"].value_counts().head(10).to_string())
+    else:
+        print("Skipped - set FAY_NC_PATH to the Fay and McKinley biomes NetCDF file to run.")
