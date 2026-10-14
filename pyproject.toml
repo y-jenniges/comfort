@@ -80,8 +80,8 @@ dev = [
 
 # Links shown on PyPI
 [project.urls]
-Repository = "https://github.com/y-jenniges/comfort"
-Issues = "https://github.com/y-jenniges/comfort/issues"
+Repository = "https://github.com/y-jenniges/comfort-db"
+Issues = "https://github.com/y-jenniges/comfort-db/issues"
 
 # Directory of packages
 [tool.setuptools.packages.find]

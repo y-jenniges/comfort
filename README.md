@@ -53,8 +53,8 @@ pip install "comfort-db[geo,plot]"
 **From source (editable, for development):**
 
 ```bash
-git clone https://github.com/y-jenniges/comfort.git
-cd comfort
+git clone https://github.com/y-jenniges/comfort-db.git
+cd comfort-db
 pip install -e ".[dev]"
 ```
 
