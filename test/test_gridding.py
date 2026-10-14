@@ -617,30 +617,6 @@ class TestOnlineWideTableFunctions:
         assert does_table_exist(conn, "grid_999", "table")
         assert does_table_exist(conn, "P_NITRATE_999", "table")
 
-    # When an E_* extended view exists, map_tables reads LATITUDE/LONGITUDE/ DATEANDTIME from it
-    # instead of joining station (no station table here to do the join)
-    def test_map_tables_uses_extended_view_when_present(self):
-        # Create dummy nitrate table and view
-        conn = sqlite3.connect(":memory:")
-        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_M REAL, VAL REAL)")
-        conn.execute(
-            "CREATE VIEW E_NITRATE AS SELECT 9.0 AS LATITUDE, 9.0 AS LONGITUDE, "
-            "LEV_M, VAL, '2000-03-01 00:00:00' AS DATEANDTIME FROM P_NITRATE"
-        )
-        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?)", [(1, 10.0, 5.0)])
-        conn.commit()
-
-        grid = _make_grid_stub()
-        grid.grid_id = 998
-        grid.grid_name = "grid_998"
-        grid.time_min = "2000-01-01 00:00:00"
-        grid.map_tables(conn, param_tables=["P_NITRATE"])
-
-        df = get_table_as_df(conn, "P_NITRATE_998")
-        cell = df[df["P_NITRATE"].notna()]
-        assert len(cell) == 1
-        assert cell["LATITUDE"].iloc[0] == pytest.approx(7.5)  # 9.0 snaps to the 5-10 cell centre
-
     # Bare parameter names ("NITRATE") are accepted everywhere "P_NITRATE" is
     def test_bare_parameter_name_accepted_everywhere(self):
         # Create dummy station and nitrate tables

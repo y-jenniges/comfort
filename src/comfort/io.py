@@ -219,38 +219,6 @@ def read_station(conn: sqlite3.Connection) -> pd.DataFrame:
     return df
 
 
-def read_extended(conn: sqlite3.Connection, param_name: str,
-                  quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None,
-                  limit: int | None = None) -> pd.DataFrame:
-    """Read an E_* extended view (parameter + lat/lon/time) as a DataFrame.
-
-    Low-level helper. Prefer :func:`load_comfort` for most use cases.
-    The E_* views must be created first via
-    :func:`comfort.database.structure.create_extended_parameter_tables`.
-
-    Args:
-        conn (sqlite3.Connection): Connection to the database.
-        param_name (str): Parameter name (without ``'E_'`` prefix).
-        quality_flags (list[QCFilter] or list[tuple[str, str]]): QC filters,
-            e.g. ``QC_GOOD``.
-        limit (int): Maximum number of rows to return. ``None`` returns all.
-            Useful as a safeguard for large tables.
-    Returns:
-        pandas.DataFrame
-    """
-    # Validate identifier
-    validate_identifier(param_name)
-
-    # Build quality filter
-    where = build_where_clause(quality_flags)
-
-    # Fetch data directly into DataFrame
-    sql = f"SELECT * FROM E_{param_name.upper()} {where}"
-    if limit is not None:
-        sql += f" LIMIT {int(limit)}"
-    return pd.read_sql_query(sql + ";", conn)
-
-
 def describe_variables(conn: sqlite3.Connection,
                        parameters: list[str] | None = None,
                        quality_flags: list[QCFilter] | list[tuple[str, str]] | None = None) -> pd.DataFrame:
@@ -511,8 +479,7 @@ def load_comfort(
     """Load COMFORT data into a filtered xarray Dataset or dict of DataFrames.
 
     All filtering (QC flags, spatial bounds and date range) is pushed to SQL
-    so only the requested rows are loaded into memory. Tries E_* views first
-    and falls back to ``P_* JOIN station``.
+    so only the requested rows are loaded into memory (``P_* JOIN station``).
 
     If *target_depths* is specified, the profiles are interpolated onto
     those depths using the specified interpolation method *interp_method*
@@ -901,7 +868,8 @@ def _read_with_geo(conn, param_name, quality_flags,
                    limit=None, with_temperature=False, with_salinity=False, region_box=None):
     """Read a parameter table with lat/lon/time, pushing all filters to SQL.
 
-    Tries the E_* extended view first and falls back to an explicit P_* JOIN station.
+    Joins ``P_*`` with ``station``. *with_temperature*/*with_salinity* additionally
+    attach the co-located temperature/salinity (needed for unit conversions).
     *region_box* is the bounding box of a region (see :func:`_append_geo_conditions`).
     """
     from .database.information import does_table_exist
@@ -909,84 +877,65 @@ def _read_with_geo(conn, param_name, quality_flags,
     # Validate identifier
     validate_identifier(param_name)
 
+    # Join P_* with station to get geo columns
     params = []
+    conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
+    _append_geo_conditions(
+        conditions, params, "s.", "s.", "p.", "s.",
+        lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
+        region_box=region_box,
+    )
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
-    # Try E_* extended view first; fall back to P_* JOIN station
-    view = f"E_{param_name.upper()}"
-    if does_table_exist(conn, view, table_type="view"):
-        # E_* view already contains lat/lon/time columns
-        conditions = [f"{col}{cond}" for col, cond in (quality_flags or [])]
+    # Optionally attach T/S for unit conversion (QC + space + time filtered)
+    ts_select, ts_join = "", ""
+    ts_params: list = []
+    if with_temperature and does_table_exist(conn, "P_TEMPERATURE"):
+        t_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
+        t_params: list = []
         _append_geo_conditions(
-            conditions, params, "", "", "", "",
+            t_conditions, t_params, "s2.", "s2.", "t.", "s2.",
             lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
             region_box=region_box,
         )
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-        query = f"SELECT * FROM {view} {where}"
-    else:
-        # Join P_* with station to get geo columns
-        conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
+        t_where = ("WHERE " + " AND ".join(t_conditions)) if t_conditions else ""
+        ts_select += ", tmp.temperature"
+        ts_join += (f"LEFT JOIN (SELECT t.ID, t.LEV_M, AVG(t.VAL) AS temperature "
+                    f"FROM P_TEMPERATURE t JOIN station s2 ON t.ID = s2.ID {t_where} "
+                    f"GROUP BY t.ID, t.LEV_M) tmp "
+                    f"ON tmp.ID = p.ID AND tmp.LEV_M = p.LEV_M ")
+        ts_params.extend(t_params)
+
+    if with_salinity and does_table_exist(conn, "P_SALINITY"):
+        sal_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
+        sal_params: list = []
         _append_geo_conditions(
-            conditions, params, "s.", "s.", "p.", "s.",
+            sal_conditions, sal_params, "s2.", "s2.", "t.", "s2.",
             lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
             region_box=region_box,
         )
-        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sal_where = ("WHERE " + " AND ".join(sal_conditions)) if sal_conditions else ""
+        ts_select += ", sal.salinity"
+        ts_join += (f"LEFT JOIN (SELECT t.ID, t.LEV_M, AVG(t.VAL) AS salinity "
+                    f"FROM P_SALINITY t JOIN station s2 ON t.ID = s2.ID {sal_where} "
+                    f"GROUP BY t.ID, t.LEV_M) sal "
+                    f"ON sal.ID = p.ID AND sal.LEV_M = p.LEV_M ")
+        ts_params.extend(sal_params)
 
-        # Optionally attach T/S for unit conversion (QC + space + time filtered)
-        ts_select, ts_join = "", ""
-        ts_params: list = []
-        if with_temperature and does_table_exist(conn, "P_TEMPERATURE"):
-            t_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
-            t_params: list = []
-            _append_geo_conditions(
-                t_conditions, t_params, "s2.", "s2.", "t.", "s2.",
-                lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
-                region_box=region_box,
-            )
-            t_where = ("WHERE " + " AND ".join(t_conditions)) if t_conditions else ""
-            ts_select += ", tmp.temperature"
-            ts_join += (f"LEFT JOIN (SELECT t.ID, t.LEV_M, AVG(t.VAL) AS temperature "
-                        f"FROM P_TEMPERATURE t JOIN station s2 ON t.ID = s2.ID {t_where} "
-                        f"GROUP BY t.ID, t.LEV_M) tmp "
-                        f"ON tmp.ID = p.ID AND tmp.LEV_M = p.LEV_M ")
-            ts_params.extend(t_params)
-
-        if with_salinity and does_table_exist(conn, "P_SALINITY"):
-            sal_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
-            sal_params: list = []
-            _append_geo_conditions(
-                sal_conditions, sal_params, "s2.", "s2.", "t.", "s2.",
-                lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
-                region_box=region_box,
-            )
-            sal_where = ("WHERE " + " AND ".join(sal_conditions)) if sal_conditions else ""
-            ts_select += ", sal.salinity"
-            ts_join += (f"LEFT JOIN (SELECT t.ID, t.LEV_M, AVG(t.VAL) AS salinity "
-                        f"FROM P_SALINITY t JOIN station s2 ON t.ID = s2.ID {sal_where} "
-                        f"GROUP BY t.ID, t.LEV_M) sal "
-                        f"ON sal.ID = p.ID AND sal.LEV_M = p.LEV_M ")
-            ts_params.extend(sal_params)
-
-        query = (
-            f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
-            f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME{ts_select} "
-            f"FROM P_{param_name.upper()} p JOIN station s ON p.ID = s.ID {ts_join}{where}"
-        )
-        # Assemble
-        params = ts_params + params
+    query = (
+        f"SELECT p.*, s.LATITUDE, s.LONGITUDE, "
+        f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME{ts_select} "
+        f"FROM P_{param_name.upper()} p JOIN station s ON p.ID = s.ID {ts_join}{where}"
+    )
+    # T/S sub-query values come first in the SQL text, so they come first in the parameters
+    params = ts_params + params
 
     # Add optional limit to query
     if limit is not None:
         query += f" LIMIT {int(limit)}"
 
     # Execute query with parametrised geo/date values
-    df = pd.read_sql_query(query, conn, params=params)
-
-    # Normalise timestamp text (E_* views have raw station strings)
-    if "DATEANDTIME" in df.columns and df["DATEANDTIME"].dtype == object:
-        df["DATEANDTIME"] = df["DATEANDTIME"].str.slice(0, 19)
-    return df
+    return pd.read_sql_query(query, conn, params=params)
 
 
 def _append_box_conditions(conditions, params, lat_pfx, lon_pfx,

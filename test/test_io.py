@@ -66,14 +66,6 @@ def comfort_db(tmp_path):
         (2, 100.0, 100.0, 210.0, 1, 3, 0, 2, 1, 1, 3, 2),
     ])
 
-    # Extended views (join parameter + station)
-    for param in ("NITRATE", "OXYGEN"):
-        conn.execute(f"""
-            CREATE VIEW E_{param} AS
-            SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME
-            FROM P_{param} p JOIN station s ON p.ID = s.ID
-        """)
-
     conn.commit()
     conn.close()
     return db_path
@@ -588,7 +580,6 @@ class TestLoadComfort:
             (1, 0.0, 0.0, 5.0, 1, 3, 0, 1, 1, 1, 3, 1),
             (1, 100.0, 100.0, 4.0, 1, 3, 0, 2, 1, 1, 3, 1),
         ])
-        conn.execute("CREATE VIEW E_NITRATE AS SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME FROM P_NITRATE p JOIN station s ON p.ID = s.ID")
         conn.execute("CREATE TABLE INSTRUMENT (ID INTEGER PRIMARY KEY, WOD_ID INTEGER, NAME TEXT, NOTES TEXT, DATE_ADDED TEXT, DATE_UPDATED TEXT)")
         conn.execute("INSERT INTO INSTRUMENT VALUES (1, 1, 'CTD', '', '', '')")
         conn.commit()
@@ -610,24 +601,6 @@ class TestLoadComfort:
         np.testing.assert_allclose(
             nitrate.isel(profile=station_ids.index(2)).values, [8.0, 7.0, 6.0])
 
-    # load_comfort works when E_* views do not exist (uses fallback JOIN)
-    def test_fallback_join_without_views(self, tmp_path):
-        pytest.importorskip("xarray")
-        db_path = str(tmp_path / "no_views.sqlite")
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE station (ID INTEGER PRIMARY KEY, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)")
-        conn.execute("INSERT INTO station VALUES (1, 45.0, -30.0, '2000-01-15')")
-        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_DBAR REAL, LEV_M REAL, VAL REAL, PQF1 INTEGER, PQF2 INTEGER, SQF INTEGER, BOTTLE_NUMBER INTEGER, PROFILE_NUMBER INTEGER, PROFILE_BEST INTEGER, UNITS_ID INTEGER, INSTRUMENT_ID INTEGER)")
-        conn.executemany("INSERT INTO P_NITRATE VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [
-            (1, 0.0, 0.0, 5.0, 1, 3, 0, 1, 1, 1, 3, 1),
-            (1, 100.0, 100.0, 4.0, 1, 3, 0, 2, 1, 1, 3, 1),
-        ])
-        conn.commit()
-        conn.close()
-
-        result = load_comfort(db_path, target_depths=[0, 100])
-        assert "NITRATE" in result.data_vars
-
     # PLATFORM_ID resolves to a name when the PLATFORM table exists
     def test_xarray_platform_resolved_with_table(self, tmp_path):
         pytest.importorskip("xarray")
@@ -647,10 +620,6 @@ class TestLoadComfort:
             (1, 0.0, 0.0, 5.0, 1, 3, 0, 1, 1, 1, 3, 1),
             (1, 100.0, 100.0, 4.0, 1, 3, 0, 2, 1, 1, 3, 1),
         ])
-        conn.execute(
-            "CREATE VIEW E_NITRATE AS SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME "
-            "FROM P_NITRATE p JOIN station s ON p.ID = s.ID"
-        )
         conn.execute(
             "CREATE TABLE PLATFORM (ID INTEGER PRIMARY KEY, NODC_CODE TEXT, WOD_ID INTEGER, "
             "IMO_ID TEXT, CALLSIGN TEXT, COUNTRY_ID INTEGER, NAME TEXT, NAME_NATIVE TEXT, "
@@ -679,7 +648,6 @@ class TestLoadComfort:
             (1, 0.0, 0.0, 5.0, 1, 3, 0, 1, 1, 1, 3, 1),
             (1, 100.0, 100.0, 4.0, 1, 3, 0, 2, 1, 1, 3, 1),
         ])
-        conn.execute("CREATE VIEW E_NITRATE AS SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME FROM P_NITRATE p JOIN station s ON p.ID = s.ID")
         conn.execute("CREATE TABLE UNITS (ID INTEGER PRIMARY KEY, NAME_SHORT TEXT)")
         conn.execute("INSERT INTO UNITS VALUES (3, 'µmol/kg')")
         conn.commit()
@@ -703,7 +671,6 @@ class TestLoadComfort:
             (1, 0.0, 0.0, 5.0, 1, 3, 0, 1, 1, 1, 3, 1),
             (1, 100.0, 100.0, 4.0, 1, 3, 0, 2, 1, 1, 7, 1),
         ])
-        conn.execute("CREATE VIEW E_NITRATE AS SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME FROM P_NITRATE p JOIN station s ON p.ID = s.ID")
         conn.execute("CREATE TABLE UNITS (ID INTEGER PRIMARY KEY, NAME_SHORT TEXT)")
         conn.execute("INSERT INTO UNITS VALUES (3, 'µmol/kg')")
         conn.execute("INSERT INTO UNITS VALUES (7, 'µmol/L')")
@@ -873,7 +840,7 @@ class TestLoadComfortUnitConversion:
 
     @pytest.fixture
     def oxygen_db(self, tmp_path):
-        """Factory: P_OXYGEN with one percent-saturation row and one µmol/kg row, no E_* views."""
+        """Factory: P_OXYGEN with one percent-saturation row and one µmol/kg row."""
         def _make(with_ts_tables=True):
             db_path = str(tmp_path / "convert.sqlite")
             conn = sqlite3.connect(db_path)
@@ -898,8 +865,8 @@ class TestLoadComfortUnitConversion:
             return db_path
         return _make
 
-    # Fallback join must supply LEV_DBAR/LATITUDE/LONGITUDE alongside temperature/salinit
-    def test_fallback_join_supplies_pressure_and_geo_alongside_ts(self, tmp_path):
+    # The join must supply LEV_DBAR/LATITUDE/LONGITUDE alongside temperature/salinity
+    def test_join_supplies_pressure_and_geo_alongside_ts(self, tmp_path):
         db_path = str(tmp_path / "geo_join.sqlite")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE station (ID INTEGER PRIMARY KEY, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)")
@@ -920,6 +887,23 @@ class TestLoadComfortUnitConversion:
         assert {"LEV_DBAR", "LATITUDE", "LONGITUDE"}.issubset(df.columns)
         assert df["temperature"].iloc[0] == 10.0
         assert df["salinity"].iloc[0] == 35.0
+
+    # A leftover E_* view (from older COMFORT databases) must not change the result:
+    # T/S are still joined, so the percent-saturation row is converted, not dropped
+    def test_leftover_extended_view_is_ignored(self, oxygen_db):
+        db_path = oxygen_db(with_ts_tables=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE VIEW E_OXYGEN AS SELECT p.*, s.LATITUDE, s.LONGITUDE, s.DATEANDTIME "
+            "FROM P_OXYGEN p JOIN station s ON p.ID = s.ID"
+        )
+        conn.commit()
+        conn.close()
+
+        result = load_comfort(db_path, parameters=["OXYGEN"], convert_units=True, as_xarray=False)
+        df = result["OXYGEN"].sort_values("LEV_M")
+        assert len(df) == 2
+        assert (df["UNITS_ID"] == 3).all()
 
     # Default on_missing="drop": A row needing T/S but missing it is dropped, logged
     def test_unconvertible_rows_dropped_with_warning(self, oxygen_db, caplog):
@@ -969,8 +953,8 @@ class TestLoadComfortUnitConversion:
         # Attrs must reflect the unit after conversion, not the source units
         assert result["NITRATE"].attrs["units"] == "µmol/kg"
 
-    # Fallback join must supply salinity for use_density=True
-    def test_fallback_join_supplies_salinity_for_dic(self, tmp_path):
+    # The join must supply salinity for use_density=True
+    def test_join_supplies_salinity_for_dic(self, tmp_path):
         db_path = str(tmp_path / "dic_join.sqlite")
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE station (ID INTEGER PRIMARY KEY, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)")

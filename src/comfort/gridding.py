@@ -730,8 +730,7 @@ class Grid(_BaseGrid):
             connection (sqlite3.Connection): Connection to the database.
             param_tables (list[str]): Parameter names to map, e.g. "NITRATE" or
                 "P_NITRATE" (both accepted). None maps all parameter tables.
-                LATITUDE/LONGITUDE/DATEANDTIME are read from the matching E_*
-                extended view when one exists, otherwise joined from station.
+                LATITUDE/LONGITUDE/DATEANDTIME are joined from station.
             replace_existing (bool): Replace already-mapped tables without prompting. Default is False.
             include_z_max (bool): Include the maximum depth value. Default is True.
         Returns:
@@ -763,29 +762,15 @@ class Grid(_BaseGrid):
             elif existing:
                 connection.execute(f"DROP TABLE {table}_{self.grid_id};")
 
-            # Build SQL query to get table data
-            # For LATITUTE/LONGITUDE/DATEANDTIME data, try the E_* extended view first
-            # Fallback to a join with STATION
+            # Build SQL query to get table data, joining LATITUDE/LONGITUDE/DATEANDTIME from STATION
             z_eq = "<=" if include_z_max else "<"
-            view = f"E_{table[2:]}" if table.startswith("P_") else None
-            if view:
-                validate_identifier(view)
-            if view and does_table_exist(connection, view, "view"):
-                q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, VAL, "
-                     f"strftime('%Y-%m-%d %H:%M:%S', DATEANDTIME) AS DATEANDTIME "
-                     f"FROM {view} WHERE "
-                     f"LATITUDE >= ? AND LATITUDE <= ? AND "
-                     f"LONGITUDE >= ? AND LONGITUDE <= ? AND "
-                     f"LEV_M >= ? AND LEV_M {z_eq} ? AND "
-                     f"DATEANDTIME >= ? AND DATEANDTIME <= ?")
-            else:
-                q = (f"SELECT s.LATITUDE, s.LONGITUDE, p.LEV_M, p.VAL, "
-                     f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
-                     f"FROM {table} p LEFT JOIN station s ON p.ID = s.ID WHERE "
-                     f"s.LATITUDE >= ? AND s.LATITUDE <= ? AND "
-                     f"s.LONGITUDE >= ? AND s.LONGITUDE <= ? AND "
-                     f"p.LEV_M >= ? AND p.LEV_M {z_eq} ? AND "
-                     f"s.DATEANDTIME >= ? AND s.DATEANDTIME <= ?")
+            q = (f"SELECT s.LATITUDE, s.LONGITUDE, p.LEV_M, p.VAL, "
+                 f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
+                 f"FROM {table} p LEFT JOIN station s ON p.ID = s.ID WHERE "
+                 f"s.LATITUDE >= ? AND s.LATITUDE <= ? AND "
+                 f"s.LONGITUDE >= ? AND s.LONGITUDE <= ? AND "
+                 f"p.LEV_M >= ? AND p.LEV_M {z_eq} ? AND "
+                 f"s.DATEANDTIME >= ? AND s.DATEANDTIME <= ?")
             # Convert to native Python types
             bind = [float(self.lat_min), float(self.lat_max),
                     float(self.lon_min), float(self.lon_max),
