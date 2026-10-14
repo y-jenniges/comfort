@@ -17,6 +17,12 @@ from comfort.geo import (
     water_mass_statistics,
 )
 
+_has_shapely = True
+try:
+    import shapely
+except ImportError:
+    _has_shapely = False
+
 _has_geopandas = True
 try:
     import geopandas
@@ -30,6 +36,7 @@ except ImportError:
     _has_xarray = False
 
 
+@pytest.mark.skipif(not _has_shapely, reason="shapely not installed ([geo] extra)")
 class TestDistanceToCoast:
     @staticmethod
     def _vertical_coastline():
@@ -157,6 +164,7 @@ def _obs_df():
     })
 
 
+@pytest.mark.skipif(not _has_shapely, reason="shapely not installed ([geo] extra)")
 class TestWaterMassMasks:
     @staticmethod
     def _box_regions():
@@ -293,6 +301,7 @@ class TestWaterMassStatistics:
         assert ("VAL", "mean") in result.columns
 
 
+@pytest.mark.skipif(not _has_shapely, reason="shapely not installed ([geo] extra)")
 class TestRegionBbox:
     _regions = {
         "north": [(0, 40), (10, 40), (10, 50), (0, 50)],
@@ -327,6 +336,7 @@ class TestRegionBbox:
         assert result == (-10.0, 10.0, 170.0, -170.0)
 
 
+@pytest.mark.skipif(not _has_shapely, reason="shapely not installed ([geo] extra)")
 class TestSelectRegions:
     _regions = {
         "north": [(0, 40), (10, 40), (10, 50), (0, 50)],
