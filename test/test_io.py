@@ -9,6 +9,14 @@ from comfort.io import (
     _read_with_geo, describe_variables, info, load_comfort, read_parameter, subset_region,
 )
 
+_has_shapely = True
+try:
+    import shapely
+except ImportError:
+    _has_shapely = False
+
+needs_shapely = pytest.mark.skipif(not _has_shapely, reason="shapely not installed ([geo] extra)")
+
 
 @pytest.fixture
 def comfort_db(tmp_path):
@@ -321,12 +329,14 @@ class TestSubsetRegion:
         assert df["VAL"].iloc[1] != 99.0
 
     # region= filters to points inside an arbitrary polygon, not just a box
+    @needs_shapely
     def test_region_filter(self):
         region = {"box": [(8, 15), (12, 15), (12, 25), (8, 25)]}
         r = subset_region(self._df(), region=region)
         assert list(r["LATITUDE"]) == [20.0]
 
     # An explicit box and region= combine (intersect), not override each other
+    @needs_shapely
     def test_region_and_box_combine(self):
         region = {"box": [(0, 0), (20, 0), (20, 40), (0, 40)]}
         r = subset_region(self._df(), lat_min=25.0, region=region)
@@ -343,6 +353,7 @@ class TestSubsetRegion:
 
     # A region crossing the antimeridian (e.g. a Pacific basin stored as two parts
     # near +-180) keeps points on both sides of the dateline, not just one
+    @needs_shapely
     def test_region_crossing_antimeridian(self):
         from shapely.geometry import MultiPolygon, Polygon
         pacific_strip = MultiPolygon([
@@ -358,6 +369,7 @@ class TestSubsetRegion:
         assert set(r["LONGITUDE"]) == {175.0, -175.0}
 
     # Explicit lon_min/lon_max combined with an antimeridian-wrapping region are both applied
+    @needs_shapely
     def test_region_crossing_antimeridian_with_explicit_lon(self):
         from shapely.geometry import MultiPolygon, Polygon
         pacific_strip = MultiPolygon([
@@ -430,6 +442,7 @@ class TestLoadComfort:
         assert result["NITRATE"]["LATITUDE"].iloc[0] == 55.0
 
     # region restricts the returned data to an arbitrary polygon (no lat/lon box needed)
+    @needs_shapely
     def test_region_filter(self, comfort_db):
         region = {"box": [(-25, 50), (-15, 50), (-15, 60), (-25, 60)]}
         result = load_comfort(comfort_db, region=region, as_xarray=False)
@@ -758,6 +771,7 @@ class TestReadParameter:
         assert (df["LATITUDE"] == 55.0).all()
 
     # region restricts rows to the matching station via an arbitrary polygon
+    @needs_shapely
     def test_region_filter(self, comfort_db):
         conn = sqlite3.connect(comfort_db)
         region = {"box": [(-25, 50), (-15, 50), (-15, 60), (-25, 60)]}

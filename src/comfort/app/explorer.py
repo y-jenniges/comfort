@@ -10,6 +10,10 @@ Set environment variables before launching:
 
 Usage:
     python -m comfort.app.explorer
+
+or from Python:
+    from comfort.app.explorer import create_app
+    create_app("/path/to/comfort.sqlite").run(debug=True)
 """
 from __future__ import annotations
 
@@ -35,10 +39,8 @@ except ImportError:
 
 try:
     from dotenv import load_dotenv
-
-    load_dotenv()
 except ImportError:
-    pass
+    load_dotenv = None
 
 from ..database.information import (
     does_table_exist,
@@ -48,15 +50,21 @@ from ..io import list_parameters, read_parameter
 from ..qc import QC_GOOD
 from ..units import UnitsConverter
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 _log = logging.getLogger(__name__)
 
-_db_path = os.environ.get("COMFORT_DB_PATH")
-if not _db_path:
-    raise EnvironmentError(
-        "COMFORT_DB_PATH environment variable is not set.\n"
-        "    export COMFORT_DB_PATH=/path/to/comfort.sqlite"
-    )
+# Database path, set by create_app()
+_db_path: str | None = None
+
+# Callbacks collected by _register_callback (so that multiple apps can run simultaneously)
+_CALLBACKS: list = []
+
+
+def _register_callback(*args, **kwargs):
+    """Collect a callback, which create_app() can attach to."""
+    def decorator(func):
+        _CALLBACKS.append((args, kwargs, func))
+        return func
+    return decorator
 
 # Server-side caches (single-user local app)
 _scatter_cache: dict = {"df": None, "bounds": None, "unit_note": ""}
@@ -90,6 +98,8 @@ _GEO_STYLE = dict(
 
 def _get_conn() -> sqlite3.Connection:
     """Open a connection to the COMFORT database."""
+    if _db_path is None:
+        raise RuntimeError("Database path is not set. Create the app with create_app().")
     return sqlite3.connect(_db_path)
 
 
@@ -166,12 +176,7 @@ _COLOUR_BY_LABELS = {
 }
 
 
-_ALL_PARAMS = _query_parameters()
-
-app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], title="COMFORT Explorer")
-
-
-def _build_layout() -> dbc.Container:
+def _build_layout(all_params: list[str]) -> dbc.Container:
     """Construct the Dash layout with scatter and grid tabs."""
     return dbc.Container([
         dbc.Row(dbc.Col(
@@ -183,7 +188,7 @@ def _build_layout() -> dbc.Container:
             # Left panel - controls
             dbc.Col([
                 dbc.Tabs(id="tabs", active_tab="scatter", children=[
-                    _scatter_tab(),
+                    _scatter_tab(all_params),
                     _grid_tab(),
                     _csv_tab(),
                 ]),
@@ -205,7 +210,7 @@ def _build_layout() -> dbc.Container:
     ], fluid=True)
 
 
-def _scatter_tab() -> dbc.Tab:
+def _scatter_tab(all_params: list[str]) -> dbc.Tab:
     """Build the Scatter tab layout."""
     return dbc.Tab(label="Scatter", tab_id="scatter", children=[
         html.Div(className="pt-3", children=[
@@ -215,8 +220,8 @@ def _scatter_tab() -> dbc.Tab:
                 dbc.CardHeader("Parameter"),
                 dbc.CardBody(dbc.Select(
                     id="scatter-param",
-                    options=[{"label": p, "value": p} for p in _ALL_PARAMS],
-                    value=_ALL_PARAMS[0] if _ALL_PARAMS else None,
+                    options=[{"label": p, "value": p} for p in all_params],
+                    value=all_params[0] if all_params else None,
                 )),
             ], className="mb-3"),
 
@@ -496,14 +501,11 @@ def _csv_tab() -> dbc.Tab:
     ])
 
 
-app.layout = _build_layout()
-
-
 # --- Tab switch -------------------------------------------------------------- #
 
 
 # Reset every mode's cache, chart and controls on every tab switch
-@app.callback(
+@_register_callback(
     Output("chart", "figure", allow_duplicate=True),
     Output("status", "children", allow_duplicate=True),
     Output("alert", "is_open", allow_duplicate=True),
@@ -559,7 +561,7 @@ def _on_tab_switch(active_tab):
 
 
 # Single scatter callback: load on button click, re-render on slider/plot change
-@app.callback(
+@_register_callback(
     Output("chart", "figure", allow_duplicate=True),
     Output("status", "children", allow_duplicate=True),
     Output("sc-depth-slider", "min"),
@@ -798,7 +800,7 @@ def _scatter_figure(df, param, plot_type, bounds, show_global=False, colour_by="
 
 
 # Refresh grid table dropdown
-@app.callback(
+@_register_callback(
     Output("grid-table", "options"),
     Output("grid-table", "value"),
     Input("tabs", "active_tab"),
@@ -812,7 +814,7 @@ def _refresh_wide_tables(_tab, _n):
 
 
 # Configure grid sliders when a wide table is selected
-@app.callback(
+@_register_callback(
     Output("grid-param", "options"),
     Output("grid-param", "value"),
     Output("grid-depth-slider", "min"),
@@ -914,7 +916,7 @@ def _populate_grid_controls(table_name):
 
 
 # Render grid chart
-@app.callback(
+@_register_callback(
     Output("chart", "figure", allow_duplicate=True),
     Output("status", "children", allow_duplicate=True),
     Output("alert", "children", allow_duplicate=True),
@@ -984,7 +986,7 @@ def _render_grid(param_col, depth_range, time_idx_range, plot_type, show_global,
     return fig, status, "", False
 
 
-@app.callback(
+@_register_callback(
     Output("grid-depth-display", "children"),
     Input("grid-depth-slider", "value"),
 )
@@ -994,7 +996,7 @@ def _show_grid_depth(val):
     return f"Depth: {_format_range_label(val[0], val[1], '{:.0f}')}m"
 
 
-@app.callback(
+@_register_callback(
     Output("grid-time-display", "children"),
     Input("grid-time-slider", "value"),
 )
@@ -1074,7 +1076,7 @@ def _grid_figure(df, param_col, depth_label, plot_type, show_global=False):
 # --- CSV callbacks ----------------------------------------------------
 
 
-@app.callback(
+@_register_callback(
     Output("csv-filename", "children"),
     Output("csv-param", "options"),
     Output("csv-param", "value"),
@@ -1174,7 +1176,7 @@ def _load_csv(contents, filename):
 
 
 # Render CSV chart
-@app.callback(
+@_register_callback(
     Output("chart", "figure", allow_duplicate=True),
     Output("status", "children", allow_duplicate=True),
     Output("alert", "children", allow_duplicate=True),
@@ -1229,7 +1231,7 @@ def _render_csv(param_col, depth_range, time_idx_range, plot_type, show_global):
     return fig, status, "", False
 
 
-@app.callback(
+@_register_callback(
     Output("csv-depth-display", "children"),
     Input("csv-depth-slider", "value"),
 )
@@ -1239,7 +1241,7 @@ def _show_csv_depth(val):
     return f"Depth: {_format_range_label(val[0], val[1], '{:.0f}')}m"
 
 
-@app.callback(
+@_register_callback(
     Output("csv-time-display", "children"),
     Input("csv-time-slider", "value"),
 )
@@ -1257,5 +1259,47 @@ def _show_csv_time(idx_range):
         return ""
 
 
+def create_app(db_path: str | os.PathLike | None = None) -> Dash:
+    """Create the COMFORT dataset Explorer app.
+
+    Args:
+        db_path (str or Path): Path to the COMFORT SQLite database. ``None``
+            reads the ``COMFORT_DB_PATH`` environment variable (a ``.env``
+            file is loaded if python-dotenv is installed).
+    Returns:
+        dash.Dash: The app.
+    Raises:
+        EnvironmentError: If no database path is given and ``COMFORT_DB_PATH`` is not set.
+    """
+    global _db_path
+
+    # Pick up COMFORT_DB_PATH from a .env file if available
+    if load_dotenv is not None:
+        load_dotenv()
+
+    tmp_path = db_path or os.environ.get("COMFORT_DB_PATH")
+    if not tmp_path:
+        raise EnvironmentError(
+            "No database path given and COMFORT_DB_PATH environment variable is not set.\n"
+            "    export COMFORT_DB_PATH=/path/to/comfort.sqlite"
+        )
+    _db_path = str(tmp_path)
+
+    # Build app
+    app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY], title="COMFORT Explorer")
+    app.layout = _build_layout(_query_parameters())
+
+    # Register callbacks
+    for args, kwargs, func in _CALLBACKS:
+        app.callback(*args, **kwargs)(func)
+    return app
+
+
+def main() -> None:
+    """Launch the app in debug mode (``python -m comfort.app.explorer``)."""
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    create_app().run(debug=True)
+
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    main()

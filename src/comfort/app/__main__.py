@@ -4,6 +4,6 @@ Usage:
     python -m comfort.app
 """
 from __future__ import annotations
-from .explorer import app
+from .explorer import main
 
-app.run(debug=True)
+main()
