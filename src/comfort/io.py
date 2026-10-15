@@ -470,7 +470,6 @@ def load_comfort(
         max_gap: float | None = None,
         interp_method: str = "pchip",
         as_xarray: bool = True,
-        normalise_columns: bool = False,
         convert_units: bool = False,
         use_density: bool = False,
         on_missing: str = "drop",
@@ -521,8 +520,6 @@ def load_comfort(
             *target_depths* is ``None``.
         as_xarray (bool): ``True`` returns ``xr.Dataset``, ``False`` returns
             ``dict[param_name, pandas.DataFrame]``.
-        normalise_columns (bool): When ``True`` and ``as_xarray=False``,
-            rename all DataFrame columns to lowercase. Default ``False``.
         convert_units (bool): When ``True``, convert each parameter's values
             to its default unit using :class:`comfort.units.UnitsConverter`.
         use_density (bool): When ``True`` and ``convert_units=True``, use
@@ -656,8 +653,6 @@ def load_comfort(
                 # Rename generic VAL column to parameter name
                 if "VAL" in df.columns:
                     df = df.rename(columns={"VAL": param})
-                if normalise_columns:
-                    df.columns = df.columns.str.lower()
                 dfs[param] = df
     finally:
         if own_conn:

@@ -415,12 +415,6 @@ class TestLoadComfort:
         result = load_comfort(comfort_db, parameters=["NITRATE"], as_xarray=False, target_depths=[50], max_gap=50)
         assert result["NITRATE"].empty
 
-    # normalise_columns=True lower-cases every column name
-    def test_normalise_columns(self, comfort_db):
-        result = load_comfort(comfort_db, as_xarray=False, normalise_columns=True)
-        assert "nitrate" in result["NITRATE"].columns
-        assert "latitude" in result["NITRATE"].columns
-
     # parameters argument restricts the dict to the requested subset
     def test_parameter_filter(self, comfort_db):
         result = load_comfort(comfort_db, parameters=["NITRATE"], as_xarray=False)
