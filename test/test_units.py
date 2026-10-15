@@ -229,6 +229,54 @@ class TestConvertDataframe:
         assert np.isclose(result["VAL"].iloc[0], expected)
         assert not np.isclose(result["VAL"].iloc[0], approx_with_insitu_t)
 
+    @staticmethod
+    def _saturation_frame(**extra):
+        data = {"VAL": [80.0], "UNITS_ID": [10], "salinity": [35.0], "temperature": [10.0], "LATITUDE": [45.0], "LONGITUDE": [-30.0]}
+        data.update({k: [v] for k, v in extra.items()})
+        return pd.DataFrame(data)
+
+    # Without LEV_DBAR, pressure is derived from depth (LEV_M, positive down) and latitude
+    def test_percent_pressure_from_depth(self):
+        uc = _make_converter()
+        from_depth = uc.convert_dataframe(self._saturation_frame(LEV_M=1000.0), "P_OXYGEN")
+        pressure = float(gsw.p_from_z(-1000.0, 45.0))
+        from_pressure = uc.convert_dataframe(self._saturation_frame(LEV_DBAR=pressure), "P_OXYGEN")
+        # Depth- and pressure-based conversions are similar
+        assert np.isclose(from_depth["VAL"].iloc[0], from_pressure["VAL"].iloc[0])
+
+    # An explicit LEV_DBAR is selected over LEV_M
+    def test_percent_lev_dbar_takes_precedence_over_depth(self):
+        uc = _make_converter()
+        both = uc.convert_dataframe(self._saturation_frame(LEV_DBAR=2000.0, LEV_M=10.0), "P_OXYGEN")
+        only_pressure = uc.convert_dataframe(self._saturation_frame(LEV_DBAR=2000.0), "P_OXYGEN")
+        assert np.isclose(both["VAL"].iloc[0], only_pressure["VAL"].iloc[0])
+
+    # NaN LEV_DBAR rows are filled from LEV_M
+    def test_percent_nan_pressure_filled_from_depth(self):
+        uc = _make_converter()
+        pressure = float(gsw.p_from_z(-1000.0, 45.0))
+        df = pd.concat([self._saturation_frame(LEV_DBAR=np.nan, LEV_M=1000.0),
+                        self._saturation_frame(LEV_DBAR=pressure, LEV_M=1000.0)], ignore_index=True)
+        result = uc.convert_dataframe(df, "P_OXYGEN")
+        assert np.isclose(result["VAL"].iloc[0], result["VAL"].iloc[1])
+
+    # Neither pressure nor depth: In-situ T approximation with a warning
+    def test_percent_without_pressure_or_depth_warns(self, caplog):
+        uc = _make_converter()
+        with caplog.at_level(logging.WARNING):
+            result = uc.convert_dataframe(self._saturation_frame(), "P_OXYGEN")
+        assert "using in-situ temperature as an approximation" in caplog.text
+        expected = 80.0 * float(gsw.O2sol_SP_pt(35.0, 10.0)) / 100
+        assert np.isclose(result["VAL"].iloc[0], expected)
+
+    # A physically impossible negative depth does not crash gsw, the row is treated as not-convertible
+    def test_percent_negative_depth_row_is_unconvertible(self):
+        uc = _make_converter()
+        df = pd.concat([self._saturation_frame(LEV_M=100.0),
+                        self._saturation_frame(LEV_M=-50.0)], ignore_index=True)
+        result = uc.convert_dataframe(df, "P_OXYGEN")
+        assert list(result.index) == [0]
+
     # Default on_missing="drop": A row needing T/S but missing it is dropped (logged)
     def test_percent_without_ts_dropped(self, caplog):
         uc = _make_converter()

@@ -372,8 +372,8 @@ class ConversionFormulas:
         """Convert % saturation to umol/kg using TEOS-10 oxygen solubility.
 
         Requires co-located temperature and salinity columns (any casing).
-        Potential temperature is computed from co-located pressure/latitude/longitude
-        when available (see :meth:`_potential_temperature_for_o2sol`), otherwise falls
+        Potential temperature is computed from co-located pressure (or depth)/latitude/
+        longitude when available (see :meth:`_potential_temperature_for_o2sol`), otherwise falls
         back to in-situ temperature as an approximation.
         """
         logging.debug("percent -> micromolPerKilogram (gsw.O2sol_SP_pt)")
@@ -395,19 +395,34 @@ class ConversionFormulas:
     def _potential_temperature_for_o2sol(self, df: pd.DataFrame, sal_col: str,
                                          temp_col: str) -> np.ndarray:
         """Helper function to compute potential temperature (pt0) for oxygen solubility.
+
+        If pressure is not given, it computes pressure from depth and latitude if both are available.
         Falls back to in-situ temperature when pressure/latitude/longitude are unavailable.
         """
-        pressure_col = _get_column(df, "LEV_DBAR") or _get_column(df, "LEV_M")
+        # Get required column names
+        pressure_col = _get_column(df, "LEV_DBAR")
+        depth_col = _get_column(df, "LEV_M")
         lat_col = _get_column(df, "LATITUDE")
         lon_col = _get_column(df, "LONGITUDE")
-        if pressure_col is None or lat_col is None or lon_col is None:
+
+        pressure = df[pressure_col] if pressure_col is not None else None
+        if depth_col is not None and lat_col is not None:
+            # Compute pressure from depth (for rows without pressure)
+            # gsw.p_from_z needs height (negative down) and raises for z > 5 m -> such rows stay NaN
+            depth = df[depth_col].where(df[depth_col] >= -5)
+            from_depth = pd.Series(gsw.p_from_z(-depth, df[lat_col]), index=df.index)
+            pressure = from_depth if pressure is None else pressure.fillna(from_depth)
+
+        if pressure is None or lat_col is None or lon_col is None:
+            # Pressure, lat or lon columns missing
             logging.warning("percent -> micromolPerKilogram: pressure/latitude/longitude "
                             "missing, using in-situ temperature as an approximation to "
                             "potential temperature")
             return df[temp_col].to_numpy(dtype=float)
 
-        sa = convert_salinity(df[sal_col], df[pressure_col], df[lon_col], df[lat_col])
-        pt = convert_temperature(df[temp_col], sa.to_numpy(), df[pressure_col], to="pt0")
+        # Compute absolute salinity and potential temperature
+        sa = convert_salinity(df[sal_col], pressure, df[lon_col], df[lat_col])
+        pt = convert_temperature(df[temp_col], sa.to_numpy(), pressure, to="pt0")
         return pt.to_numpy()
 
     def _with_density(self, df: pd.DataFrame, density_fn, use_density: bool,
