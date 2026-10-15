@@ -10,7 +10,7 @@ import gsw
 import numpy as np
 import pandas as pd
 
-from .physics import convert_salinity, convert_temperature
+from .physics import convert_salinity, convert_temperature, resolve_pressure
 from .util.sqlite_utils import validate_identifier
 
 DENSITY_FALLBACKS = ("constant", "drop", "raise")
@@ -399,22 +399,14 @@ class ConversionFormulas:
         If pressure is not given, it computes pressure from depth and latitude if both are available.
         Falls back to in-situ temperature when pressure/latitude/longitude are unavailable.
         """
-        # Get required column names
-        pressure_col = _get_column(df, "LEV_DBAR")
-        depth_col = _get_column(df, "LEV_M")
         lat_col = _get_column(df, "LATITUDE")
         lon_col = _get_column(df, "LONGITUDE")
 
-        pressure = df[pressure_col] if pressure_col is not None else None
-        if depth_col is not None and lat_col is not None:
-            # Compute pressure from depth (for rows without pressure)
-            # gsw.p_from_z needs height (negative down) and raises for z > 5 m -> such rows stay NaN
-            depth = df[depth_col].where(df[depth_col] >= -5)
-            from_depth = pd.Series(gsw.p_from_z(-depth, df[lat_col]), index=df.index)
-            pressure = from_depth if pressure is None else pressure.fillna(from_depth)
+        # Resolve pressure (without latitude, the in-situ temperature fallback applies)
+        pressure = resolve_pressure(df) if lat_col is not None else None
 
-        if pressure is None or lat_col is None or lon_col is None:
-            # Pressure, lat or lon columns missing
+        if pressure is None or pressure.isna().all() or lon_col is None:
+            # Pressure, lat or lon missing
             logging.warning("percent -> micromolPerKilogram: pressure/latitude/longitude "
                             "missing, using in-situ temperature as an approximation to "
                             "potential temperature")
