@@ -13,6 +13,8 @@ import pandas as pd
 from .physics import convert_salinity, convert_temperature
 from .util.sqlite_utils import validate_identifier
 
+DENSITY_FALLBACKS = ("constant", "drop", "raise")
+
 
 def _get_column(df: pd.DataFrame, name: str) -> str | None:
     """Return the column name matching name case-insensitively (or None)."""
@@ -65,7 +67,8 @@ class UnitsConverter:
         return cls(conn, default_units, units)
 
     def convert_dataframe(self, df: pd.DataFrame, param_table_name: str,
-                          use_density: bool = False, on_missing: str = "drop") -> pd.DataFrame:
+                          use_density: bool = False, on_missing: str = "drop",
+                          density_fallback: str = "constant") -> pd.DataFrame:
         """Convert a DataFrame's values to the default unit.
 
         Rows that cannot be converted (no UNITS_ID, no registered conversion
@@ -80,9 +83,19 @@ class UnitsConverter:
             on_missing (str): Policy for unconvertible rows: ``'drop'``
                 (default) removes them, ``'keep'`` retains them with their
                 original VAL and UNITS_ID, ``'raise'`` raises ValueError.
+            density_fallback (str): With ``use_density=True``, policy for rows whose
+                density cannot be computed (missing/NaN salinity, temperature or
+                position): ``'constant'`` (default, use 1.025 kg/L), ``'drop'`` or
+                ``'raise'``. Counts are logged.
         """
+        # Ensure that only defined missingness policies are passed
         if on_missing not in ("drop", "keep", "raise"):
             raise ValueError(f"on_missing must be 'drop', 'keep' or 'raise', got {on_missing!r}")
+        if density_fallback not in DENSITY_FALLBACKS:
+            raise ValueError(f"density_fallback must be one of {DENSITY_FALLBACKS}, "
+                             f"got {density_fallback!r}")
+
+        # Ensure unit id info is given
         if "UNITS_ID" not in df.columns or df.empty:
             return df
 
@@ -134,7 +147,7 @@ class UnitsConverter:
                 n_no_formula += len(chunk)
                 continue
 
-            converted = formula(chunk, param_table_name, use_density)
+            converted = formula(chunk, param_table_name, use_density=use_density, density_fallback=density_fallback)
 
             # NaN from a non-NaN input marks a failed conversion (missing T/S)
             failed = converted[vc].isna() & chunk[vc].notna()
@@ -201,7 +214,8 @@ class UnitsConverter:
 
     def convert_units(self, tables: list[str], use_density: bool = False,
                       override_old_tables: bool = False,
-                      on_missing: str = "drop") -> dict[str, str]:
+                      on_missing: str = "drop",
+                      density_fallback: str = "constant") -> dict[str, str]:
         """Convert units for the given parameter tables to their default unit.
 
         Args:
@@ -210,6 +224,8 @@ class UnitsConverter:
             override_old_tables (bool): Replace the original table.
             on_missing (str): Policy for unconvertible rows
                 (``'drop'``, ``'keep'`` or ``'raise'``). Default ``'drop'``.
+            density_fallback (str): Policy for rows without computable density
+                (``'constant'``, ``'drop'`` or ``'raise'``). Default ``'constant'``.
         Returns:
             dict[str, str]: Maps each input table name to the table holding
                 the converted data (the input name itself when nothing changed).
@@ -226,7 +242,8 @@ class UnitsConverter:
             old_len = len(df)
 
             # Convert units
-            df_new = self.convert_dataframe(df, table, use_density, on_missing)
+            df_new = self.convert_dataframe(df, table, use_density=use_density,
+                                            on_missing=on_missing, density_fallback=density_fallback)
 
             # Write converted data only when something changed
             changed = ("UNITS_ID" in df_new.columns
@@ -285,48 +302,48 @@ class ConversionFormulas:
         return float(self.molar_masses.loc[mask, "MOLAR_MASS"].iloc[0])
 
     def milliEquivalentPerLiter_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                                    use_density: bool = False) -> pd.DataFrame:
+                                                    use_density: bool = False,
+                                                    density_fallback: str = "constant") -> pd.DataFrame:
         """Convert meq/L to umol/kg (App. C: lab_dens)."""
         logging.debug("milliEquivalentPerLiter -> micromolPerKilogram")
-        temp = df.copy()
-        lab_dens = self.lab_density(df, use_density)
+        temp, lab_dens = self._with_density(df, self.lab_density, use_density=use_density, density_fallback=density_fallback)
         return temp.assign(VAL=temp["VAL"] * 1000 / lab_dens, UNITS_ID=3)
 
     def microgramPerLiter_microgramPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                               use_density: bool = False) -> pd.DataFrame:
+                                               use_density: bool = False,
+                                               density_fallback: str = "constant") -> pd.DataFrame:
         """Convert ug/L to ug/kg (App. C: real_dens for chlorophyll, lab_dens otherwise)."""
         logging.debug("microgramPerLiter -> microgramPerKilogram")
-        temp = df.copy()
-        if param_name.upper().endswith("CHLOROPHYLL"):
-            dens = self.real_density(df, use_density)
-        else:
-            dens = self.lab_density(df, use_density)
+        density_fn = (self.real_density if param_name.upper().endswith("CHLOROPHYLL") else self.lab_density)
+        temp, dens = self._with_density(df, density_fn, use_density=use_density, density_fallback=density_fallback)
         return temp.assign(VAL=temp["VAL"] / dens, UNITS_ID=14)
 
     def millimolPerLiter_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                             use_density: bool = False) -> pd.DataFrame:
+                                             use_density: bool = False,
+                                             density_fallback: str = "constant") -> pd.DataFrame:
         """Convert mmol/L to umol/kg (App. C: lab_dens)."""
         logging.debug("millimolPerLiter -> micromolPerKilogram")
-        temp = df.copy()
-        lab_dens = self.lab_density(df, use_density)
+        temp, lab_dens = self._with_density(df, self.lab_density, use_density=use_density, density_fallback=density_fallback)
         return temp.assign(VAL=temp["VAL"] * 1000 / lab_dens, UNITS_ID=3)
 
     def nanomolPerKilogram_femtomolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                               use_density: bool = False) -> pd.DataFrame:
+                                               use_density: bool = False,
+                                               density_fallback: str = "constant") -> pd.DataFrame:
         """Convert nmol/kg to fmol/kg."""
         logging.debug("nanomolPerKilogram -> femtomolPerKilogram")
         return df.copy().assign(VAL=df["VAL"] * 1_000_000, UNITS_ID=19)
 
     def milliliterPerLiter_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                               use_density: bool = False) -> pd.DataFrame:
+                                               use_density: bool = False,
+                                               density_fallback: str = "constant") -> pd.DataFrame:
         """Convert mL/L to umol/kg (oxygen-specific, factor 44.661; App. C: real_dens)."""
         logging.debug("milliliterPerLiter -> micromolPerKilogram (oxygen-specific, factor 44.661)")
-        temp = df.copy()
-        real_dens = self.real_density(df, use_density)
+        temp, real_dens = self._with_density(df, self.real_density, use_density=use_density, density_fallback=density_fallback)
         return temp.assign(VAL=temp["VAL"] * 44.661 / real_dens, UNITS_ID=3)
 
     def microgramPerKilogram_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                                 use_density: bool = False) -> pd.DataFrame:
+                                                 use_density: bool = False,
+                                                 density_fallback: str = "constant") -> pd.DataFrame:
         """Convert ug/kg to umol/kg using molar mass."""
         logging.debug("microgramPerKilogram -> micromolPerKilogram")
         temp = df.copy()
@@ -334,22 +351,24 @@ class ConversionFormulas:
         return temp.assign(VAL=temp["VAL"] / molar_mass, UNITS_ID=3)
 
     def microgramPerLiter_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                              use_density: bool = False) -> pd.DataFrame:
+                                              use_density: bool = False,
+                                              density_fallback: str = "constant") -> pd.DataFrame:
         """Convert ug/L to umol/kg using molar mass (App. C: lab_dens)."""
         logging.debug("microgramPerLiter -> micromolPerKilogram")
-        temp = df.copy()
-        lab_dens = self.lab_density(df, use_density)
+        temp, lab_dens = self._with_density(df, self.lab_density, use_density=use_density, density_fallback=density_fallback)
         molar_mass = self.get_molar_mass(param_name)
         return temp.assign(VAL=temp["VAL"] / (molar_mass * lab_dens), UNITS_ID=3)
 
     def microgramAtomPerKilogram_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                                     use_density: bool = False) -> pd.DataFrame:
+                                                     use_density: bool = False,
+                                                     density_fallback: str = "constant") -> pd.DataFrame:
         """Convert ugAtom/kg to umol/kg (1:1 equivalence)."""
         logging.debug("microgramAtomPerKilogram -> micromolPerKilogram")
         return df.copy().assign(UNITS_ID=3)
 
     def percent_micromolPerKilogram(self, df: pd.DataFrame, param_name: str,
-                                    use_density: bool = False) -> pd.DataFrame:
+                                    use_density: bool = False,
+                                    density_fallback: str = "constant") -> pd.DataFrame:
         """Convert % saturation to umol/kg using TEOS-10 oxygen solubility.
 
         Requires co-located temperature and salinity columns (any casing).
@@ -391,25 +410,46 @@ class ConversionFormulas:
         pt = convert_temperature(df[temp_col], sa.to_numpy(), df[pressure_col], to="pt0")
         return pt.to_numpy()
 
-    def lab_density(self, df: pd.DataFrame, use_density: bool) -> float | pd.Series:
-        """Density at sample salinity, T = 22 °C, atmospheric pressure [kg/L].
+    def _with_density(self, df: pd.DataFrame, density_fn, use_density: bool,
+                      density_fallback: str) -> tuple[pd.DataFrame, float | pd.Series]:
+        """Return (df, density) with rows lacking a density removed (``'drop'`` policy)."""
+        dens = density_fn(df, use_density=use_density, density_fallback=density_fallback)
+        if isinstance(dens, pd.Series):
+            not_nan_dens = dens.notna()
 
-        ``lab_dens`` of COMFORT report Appendix C. Falls back to the fixed
-        seawater approximation 1.025 kg/L when disabled or inputs are missing.
+            # Check if there are any not-nan densities
+            if not not_nan_dens.all():
+                return df[not_nan_dens].copy(), dens[not_nan_dens]
+
+        # If no not-nan densities, return all data
+        return df.copy(), dens
+
+    def lab_density(self, df: pd.DataFrame, use_density: bool,
+                    density_fallback: str = "constant") -> float | pd.Series:
+        """Density at sample salinity, T = 22 °C, atmospheric pressure [kg/L],
+        see ``lab_dens`` of COMFORT report Appendix C.
         """
-        return self._density(df, use_density, lab_temperature=22.0)
+        return self._density(df, use_density=use_density, lab_temperature=22.0, density_fallback=density_fallback)
 
-    def real_density(self, df: pd.DataFrame, use_density: bool) -> float | pd.Series:
-        """Density at sample salinity, in-situ temperature, atmospheric pressure [kg/L].
-
-        ``real_dens`` of COMFORT report Appendix C. Falls back to the fixed
-        seawater approximation 1.025 kg/L when disabled or inputs are missing.
+    def real_density(self, df: pd.DataFrame, use_density: bool,
+                     density_fallback: str = "constant") -> float | pd.Series:
+        """Density at sample salinity, in-situ temperature, atmospheric pressure [kg/L],
+        see ``real_dens`` of COMFORT report Appendix C.
         """
-        return self._density(df, use_density, lab_temperature=None)
+        return self._density(df, use_density=use_density, lab_temperature=None, density_fallback=density_fallback)
 
     def _density(self, df: pd.DataFrame, use_density: bool,
-                 lab_temperature: float | None) -> float | pd.Series:
-        """TEOS-10 density [kg/L] at sea pressure 0; column names resolved case-insensitively."""
+                 lab_temperature: float | None, density_fallback: str) -> float | pd.Series:
+        """TEOS-10 density [kg/L] at sea pressure 0, column names resolved case-insensitively.
+
+        With ``use_density=False`` the COMFORT report's fixed factor 1.025 kg/L is returned.
+        Otherwise, densities are computed and for non-computable densities, the fallback
+        policy (``density_fallback``) is applied.
+        """
+        if density_fallback not in DENSITY_FALLBACKS:
+            # Ensure valid density fallback
+            raise ValueError(f"density_fallback must be one of {DENSITY_FALLBACKS}, "
+                             f"got {density_fallback!r}")
         if not use_density:
             return 1.025
 
@@ -423,15 +463,30 @@ class ConversionFormulas:
             temp_col = _get_column(df, "TEMPERATURE")
             needed.append(("temperature", temp_col))
 
-        # Check if all needed columns are given
-        missing = [name for name, col in needed if col is None]
+        # Check if any column required for density computations is missing
+        missing = [needed_col_name for needed_col_name, col in needed if col is None]
         if missing:
-            logging.warning("density: columns missing (%s) - "
-                            "using constant density 1.025 kg/L", ", ".join(missing))
-            return 1.025
+            # If any column is missing, set densities to NaN
+            reason = f"columns missing ({', '.join(missing)})"
+            rho = pd.Series(np.nan, index=df.index)
+        else:
+            # If all columns are there, compute densities
+            temperature = lab_temperature if lab_temperature is not None else df[temp_col]
+            salinity_absolute = gsw.SA_from_SP(df[sal_col], 0.0, df[lon_col], df[lat_col])
+            rho = pd.Series(np.asarray(gsw.density.rho_t_exact(salinity_absolute, temperature, 0.0)) / 1000, index=df.index)
+            reason = "NaN salinity/temperature/position"  # NaN densities can arise for single rows
 
-        # Compute and return density
-        temperature = lab_temperature if lab_temperature is not None else df[temp_col]
-        salinity_absolute = gsw.SA_from_SP(df[sal_col], 0.0, df[lon_col], df[lat_col])
-        rho = gsw.density.rho_t_exact(salinity_absolute, temperature, 0.0)
-        return pd.Series(np.asarray(rho) / 1000, index=df.index).fillna(1.025)
+        # Check if any density is NaN/undefined
+        nan_density_rows = rho.isna()
+        if not nan_density_rows.any():
+            return rho
+
+        # If NaN densities exist, apply density_fallback policy
+        n = int(nan_density_rows.sum())
+        if density_fallback == "raise":
+            # Raise error
+            raise ValueError(f"density: {n} of {len(df)} rows undefined - {reason}")
+        # Use constant density
+        action = "using constant density 1.025 kg/L" if density_fallback == "constant" else "dropped"
+        logging.warning("density: %d of %d rows undefined (%s) - %s", n, len(df), reason, action)
+        return rho.fillna(1.025) if density_fallback == "constant" else rho

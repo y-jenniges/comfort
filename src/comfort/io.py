@@ -474,6 +474,7 @@ def load_comfort(
         convert_units: bool = False,
         use_density: bool = False,
         on_missing: str = "drop",
+        density_fallback: str = "constant",
         limit: int | None = None,
 ) -> xr.Dataset | dict[str, pd.DataFrame]:
     """Load COMFORT data into a filtered xarray Dataset or dict of DataFrames.
@@ -533,6 +534,10 @@ def load_comfort(
         on_missing (str): Policy for rows that cannot be converted when
             ``convert_units=True``: ``'drop'`` (default),
             ``'keep'`` (retain original value and UNITS_ID) or ``'raise'``.
+        density_fallback (str): With ``use_density=True``, policy for rows whose
+            density cannot be computed (missing/NaN salinity, temperature or
+            position): ``'constant'`` (default, use 1.025 kg/L), ``'drop'`` or
+            ``'raise'``. Counts are logged.
         limit (int): Maximum number of rows to load per parameter.
             ``None`` loads all matching rows. Useful as a safeguard for
             large tables like TEMPERATURE or SALINITY.
@@ -637,7 +642,8 @@ def load_comfort(
                 if _converter is not None and "VAL" in df.columns:
                     df = _converter.convert_dataframe(df, f"P_{param}",
                                                       use_density=use_density,
-                                                      on_missing=on_missing)
+                                                      on_missing=on_missing,
+                                                      density_fallback=density_fallback)
                     # Empty df warning
                     if df.empty:
                         logging.warning("load_comfort: no %s rows left after unit conversion", param)

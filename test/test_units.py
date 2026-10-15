@@ -45,8 +45,67 @@ class TestConversionFormulas:
         df = pd.DataFrame({"VAL": [2.0], "UNITS_ID": [7]})
         with caplog.at_level(logging.WARNING):
             density = formulas.real_density(df, use_density=True)
-        assert density == 1.025
-        assert "constant density" in caplog.text
+        assert (density == 1.025).all()  # density fell back to constant
+        assert "1 of 1 rows undefined" in caplog.text  # undefined density count is logged
+        assert "constant density" in caplog.text  # density policy is logged
+
+    @staticmethod
+    def _ts_frame(salinity):
+        return pd.DataFrame({
+            "VAL": [2.0] * len(salinity), "UNITS_ID": [7] * len(salinity),
+            "salinity": salinity, "LATITUDE": [45.0] * len(salinity),
+            "LONGITUDE": [-30.0] * len(salinity),
+        })
+
+    # NaN salinity rows get the constant (default density policy), computed rows are untouched, counts logged
+    def test_density_nan_rows_use_constant_and_log_count(self, formulas, caplog):
+        df = self._ts_frame([35.0, np.nan, 34.0])
+        with caplog.at_level(logging.WARNING):
+            # Warning is logged that density falls back to constant
+            density = formulas.lab_density(df, use_density=True)
+        assert density.iloc[1] == 1.025  # constant density for nan-salinity row
+        assert density.iloc[0] != 1.025 and density.iloc[2] != 1.025  # not-constant density for not-nan-salinity rows
+        assert "1 of 3 rows undefined" in caplog.text  # counts are logged
+
+    # density_fallback='drop' removes rows without a density from the conversion
+    def test_density_fallback_drop_removes_rows(self, formulas):
+        df = self._ts_frame([35.0, np.nan, 34.0])
+        result = formulas.millimolPerLiter_micromolPerKilogram(
+            df, "P_DIC", use_density=True, density_fallback="drop")
+        assert list(result.index) == [0, 2]  # index is not changed
+        assert result["VAL"].notna().all()  # no nan-values
+
+    # density_fallback='drop' with a missing column removes every row
+    def test_density_fallback_drop_missing_column_removes_all(self, formulas):
+        df = pd.DataFrame({"VAL": [2.0], "UNITS_ID": [7]})
+        result = formulas.millimolPerLiter_micromolPerKilogram(
+            df, "P_DIC", use_density=True, density_fallback="drop")
+        assert result.empty
+
+    # density_fallback='raise' fails on NaN rows and on missing columns
+    def test_density_fallback_raise(self, formulas):
+        with pytest.raises(ValueError, match="1 of 2 rows undefined"):
+            formulas.lab_density(self._ts_frame([35.0, np.nan]), True, "raise")
+        with pytest.raises(ValueError, match="columns missing"):
+            formulas.lab_density(pd.DataFrame({"VAL": [1.0]}), True, "raise")
+
+    # Complete inputs never trigger the fallback, whatever the policy
+    def test_density_fallback_irrelevant_when_inputs_complete(self, formulas):
+        df = self._ts_frame([35.0, 34.0])
+        expected = formulas.lab_density(df, True)
+        for policy in ("constant", "drop", "raise"):
+            assert formulas.lab_density(df, True, policy).equals(expected)
+
+    # The constant mode (use_density=False) is independent of the policy
+    def test_density_fallback_ignored_without_use_density(self, formulas):
+        df = pd.DataFrame({"VAL": [1.0]})
+        for policy in ("constant", "drop", "raise"):
+            assert formulas.lab_density(df, False, policy) == 1.025
+
+    # Unknown policies are rejected
+    def test_density_fallback_invalid_raises(self, formulas):
+        with pytest.raises(ValueError, match="density_fallback"):
+            formulas.lab_density(pd.DataFrame({"VAL": [1.0]}), True, "bogus")
 
     # App. C lab_dens: Sample S, T = 22 °C, atmospheric pressure (p = 0)
     def test_lab_density_uses_22C_at_surface(self, formulas):
@@ -104,6 +163,29 @@ class TestConvertDataframe:
         df = pd.DataFrame({"VAL": [200.0, 210.0], "UNITS_ID": [3, 3]})
         result = uc.convert_dataframe(df, "P_OXYGEN")
         assert result.equals(df)
+
+    # density_fallback is threaded through convert_dataframe (DIC mmol/L -> umol/kg, UNITS_ID 7 -> 3)
+    def test_density_fallback_policies(self):
+        uc = _make_converter(table="P_DIC")
+        df = pd.DataFrame({"VAL": [2.0, 2.0], "UNITS_ID": [7, 7], "salinity": [35.0, np.nan],
+                           "LATITUDE": [45.0, 45.0], "LONGITUDE": [-30.0, -30.0]})
+
+        # Constant density policy
+        constant = uc.convert_dataframe(df, "P_DIC", use_density=True)
+        assert np.isclose(constant["VAL"].iloc[1], 2.0 * 1000 / 1.025)  # constand density due to missing salinity
+        assert not np.isclose(constant["VAL"].iloc[0], 2.0 * 1000 / 1.025)  # density should have been computed
+
+        # Drop nan-densities policy
+        dropped = uc.convert_dataframe(df, "P_DIC", use_density=True, density_fallback="drop")
+        assert list(dropped.index) == [0]
+
+        # Error raising
+        with pytest.raises(ValueError, match="undefined"):
+            # On un-computable density
+            uc.convert_dataframe(df, "P_DIC", use_density=True, density_fallback="raise")
+        with pytest.raises(ValueError, match="density_fallback"):
+            # On unknown density policy
+            uc.convert_dataframe(df, "P_DIC", density_fallback="bogus")
 
     # Percent saturation converts to µmol/kg using lowercase T/S columns
     def test_percent_with_ts_converts(self):
