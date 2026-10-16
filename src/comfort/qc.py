@@ -4,7 +4,10 @@ from __future__ import annotations
 import pandas as pd
 import logging
 import operator as op
+import re
 from collections import namedtuple
+
+from .util import validate_identifier
 
 # Map of comparison operator strings to their Python equivalents
 _OP_MAP = {
@@ -23,6 +26,65 @@ QC_ALL = []
 # Accept records that passed basic quality control (PQF1 checked, PQF2 acceptable).
 QC_GOOD = [QCFilter("PQF1", ">0"), QCFilter("PQF2", ">2")]
 
+# Operator followed by a decimal number, e.g. ">0", ">= 2", "!=-1"
+_CONDITION_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def _parse_flag(column: str, condition: str) -> tuple[str, str, str]:
+    """Validate one quality flag and split its condition into operator and number.
+
+    Args:
+        column (str): Name of the flag column, e.g. ``"PQF1"``.
+        condition (str): Operator followed by a number, e.g. ``">0"``.
+            Supported operators: ``>=``, ``<=``, ``>``, ``<``, ``==``, ``!=``.
+    Returns:
+        tuple[str, str, str]: Column name, operator and number.
+    Raises:
+        ValueError: If *column* is not a safe SQL identifier or *condition*
+            is not a supported operator followed by a number.
+    """
+    # Validate the column name
+    validate_identifier(column)
+
+    # Split the condition into operator and number
+    match = _CONDITION_RE.match(condition) if isinstance(condition, str) else None
+    if match is None:
+        raise ValueError(
+            f"Invalid quality flag condition {condition!r} for column {column!r}: "
+            "expected one of >=, <=, >, <, ==, != followed by a number, e.g. '>0'."
+        )
+    return column, match.group(1), match.group(2)
+
+
+def qc_conditions(quality_flags: list[QCFilter] | list[tuple[str, str]] | None,
+                  table_alias: str | None = None) -> list[str]:
+    """Return the SQL conditions for the given quality flags.
+
+    Args:
+        quality_flags: Quality flag criteria, e.g. ``QC_GOOD``.
+        table_alias: Optional table alias to prefix column names.
+    Returns:
+        list[str]: One condition per flag, e.g. ``["p.PQF1>0", "p.PQF2>2"]``.
+        Empty when *quality_flags* is ``None`` or empty.
+    Raises:
+        ValueError: If a flag or *table_alias* is invalid (see :func:`_parse_flag`).
+    """
+    # No quality flags: nothing to filter
+    if not quality_flags:
+        return []
+
+    # Validate the table alias and build the column prefix
+    if table_alias:
+        validate_identifier(table_alias)
+    prefix = f"{table_alias}." if table_alias else ""
+
+    # Build each condition from the validated parts
+    conditions = []
+    for column, condition in quality_flags:
+        column, operator, number = _parse_flag(column, condition)
+        conditions.append(f"{prefix}{column}{operator}{number}")
+    return conditions
+
 
 def build_where_clause(quality_flags: list[QCFilter] | list[tuple[str, str]] | None,
                        table_alias: str | None = None,
@@ -36,10 +98,10 @@ def build_where_clause(quality_flags: list[QCFilter] | list[tuple[str, str]] | N
     Returns:
         Clause string, or ``""`` when *quality_flags* is empty.
     """
-    if not quality_flags:
+    conditions = qc_conditions(quality_flags, table_alias)
+    if not conditions:
         return ""
-    prefix = f"{table_alias}." if table_alias else ""
-    return keyword + " " + " AND ".join(f"{prefix}{col}{cond}" for col, cond in quality_flags)
+    return f"{keyword} " + " AND ".join(conditions)
 
 
 def apply_qc_flags(df: pd.DataFrame,
@@ -62,18 +124,15 @@ def apply_qc_flags(df: pd.DataFrame,
 
     # Start with all rows selected, then narrow down
     mask = pd.Series(True, index=df.index)
-    for col, cond in quality_flags:
+    for column, condition in quality_flags:
+        # Parse and validate the quality flag
+        column, operator, number = _parse_flag(column, condition)
 
-        # Check if column exists
-        if col not in df.columns:
-            logging.warning("apply_qc_flags: column %r not in DataFrame, skipped", col)
-            continue
+        # A missing flag column would silently leave the data unfiltered
+        if column not in df.columns:
+            raise ValueError(f"apply_qc_flags: column {column!r} not in DataFrame")
 
-        # Parse the operator string and apply the respective comparison
-        for sym, fn in _OP_MAP.items():
-            if cond.startswith(sym):
-                mask &= fn(df[col], float(cond[len(sym):]))
-                break
+        mask &= _OP_MAP[operator](df[column], float(number))
 
     return df[mask].copy()
 

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 from .profile_analysis import interpolate_depth_levels
 from .database.information import get_names_of_all_parameter_tables
 from .geo import region_bbox, water_mass_masks
-from .qc import QCFilter, build_where_clause
+from .qc import QCFilter, build_where_clause, qc_conditions
 from .util.sqlite_utils import validate_identifier
 
 
@@ -176,7 +176,7 @@ def read_parameter(conn: sqlite3.Connection, param_name: str,
 
     # Build query with geo, profile and quality filters
     params: list = []
-    conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
+    conditions = qc_conditions(quality_flags, "p")
     if profiles is not None:
         placeholders = ",".join("?" * len(profiles))
         conditions.append(f"p.PROFILE_NUMBER IN ({placeholders})")
@@ -880,7 +880,7 @@ def _read_with_geo(conn, param_name, quality_flags,
 
     # Join P_* with station to get geo columns
     params = []
-    conditions = [f"p.{col}{cond}" for col, cond in (quality_flags or [])]
+    conditions = qc_conditions(quality_flags, "p")
     _append_geo_conditions(
         conditions, params, "s.", "s.", "p.", "s.",
         lat_min, lat_max, lon_min, lon_max, depth_min, depth_max, date_min, date_max,
@@ -892,7 +892,7 @@ def _read_with_geo(conn, param_name, quality_flags,
     ts_select, ts_join = "", ""
     ts_params: list = []
     if with_temperature and does_table_exist(conn, "P_TEMPERATURE"):
-        t_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
+        t_conditions = qc_conditions(quality_flags, "t")
         t_params: list = []
         _append_geo_conditions(
             t_conditions, t_params, "s2.", "s2.", "t.", "s2.",
@@ -908,7 +908,7 @@ def _read_with_geo(conn, param_name, quality_flags,
         ts_params.extend(t_params)
 
     if with_salinity and does_table_exist(conn, "P_SALINITY"):
-        sal_conditions = [f"t.{col}{cond}" for col, cond in (quality_flags or [])]
+        sal_conditions = qc_conditions(quality_flags, "t")
         sal_params: list = []
         _append_geo_conditions(
             sal_conditions, sal_params, "s2.", "s2.", "t.", "s2.",
