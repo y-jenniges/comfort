@@ -82,6 +82,7 @@ dev = [
 [project.urls]
 Repository = "https://github.com/y-jenniges/comfort-db"
 Issues = "https://github.com/y-jenniges/comfort-db/issues"
+Documentation = "https://comfort-db.readthedocs.io/en/latest/"
 
 # Directory of packages
 [tool.setuptools.packages.find]

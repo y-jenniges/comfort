@@ -1,10 +1,11 @@
 # comfort-db
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](python_badge)
-[![Documentation Status](https://readthedocs.org/projects/comfort-db/badge/?version=latest)](https://comfort-db.readthedocs.io/en/latest/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Documentation Status](https://app.readthedocs.org/projects/comfort-db/badge/?version=latest)](https://comfort-db.readthedocs.io/en/latest/)
 
-Python library for working with the [COMFORT](https://www.doi.org/10.11582/2022.00039)[1] oceanographic SQLite dataset. 
+Python library for working with the [COMFORT](https://www.doi.org/10.11582/2022.00039)[1] oceanographic SQLite dataset 
+with [code documentation](https://comfort-db.readthedocs.io/en/latest/). 
 
 `comfort-db` wraps database access, preprocessing and basic analysis utilities into one library. 
 This includes filtering for quality and space-time ranges, unit conversions, spatiotemporal gridding, profile and water-mass analysis, 
@@ -15,14 +16,12 @@ At a latitude, longitude and time, a station defines where measurements were tak
 At a station, profiles are measured, i.e. a parameter like temperature at different depths with a specific instrument.
 There can be multiple profiles at the same station, though in the COMFORT dataset, it is mostly one profile per station. 
 
-This library bases on and extends code developed in [3], including parts of the gridding, unit conversion, analysis and plotting 
+This library bases on and extends code developed in [2], including parts of the gridding, unit conversion, analysis and plotting 
 routines.
 
 [1] Korablev, A., Olsen, A., (2022) Geophysical Institute, University of Bergen, Bjerknes Centre for Climate Research. COMFORT Dataset [Data set]. NIRD RDA. https://doi.org/10.11582/2022.00039
 
-[2] McDougall, T., & Barker, P. (2011). Getting started with TEOS-10 and the Gibbs Seawater (GSW) Oceanographic Toolbox. SCOR/IAPSO WG127
-
-[3] Jenniges, Y., Sonnewald, M., Maneth, S., Olsen, A., Koch, Boris P., (2025) Unveiling 3D ocean biogeochemical provinces in the North Atlantic: 
+[2] Jenniges, Y., Sonnewald, M., Maneth, S., Olsen, A., Koch, Boris P., (2025) Unveiling 3D ocean biogeochemical provinces in the North Atlantic: 
 A systematic comparison and validation of clustering methods, Ecological Informatics, Volume 91, 103390, ISSN 1574-9541,
 https://doi.org/10.1016/j.ecoinf.2025.103390.
 
@@ -59,6 +58,12 @@ cd comfort-db
 pip install -e ".[dev]"
 ```
 
+To build the documentation locally:
+
+```bash
+sphinx-build documentation/source documentation/build/html
+```
+
 Requires Python $\ge$ 3.10.
 
 ---
@@ -87,19 +92,6 @@ ds = comfort.load_comfort(
 with comfort.connect("/path/to/comfort.sqlite") as conn:
     summary = comfort.describe_variables(conn, parameters=["NITRATE", "DIC"], quality_flags=comfort.QC_GOOD)
 ```
-
----
-
-## Documentation and examples
-
-Full documentation: https://comfort-db.readthedocs.io/en/latest/
-
-```bash
-pip install -e ".[docs]"
-sphinx-build documentation/source documentation/build/html
-```
-
-Runnable scripts (requiring the COMFORT dataset), covering every module, live in [`examples/`](examples/).
 
 ---
 
