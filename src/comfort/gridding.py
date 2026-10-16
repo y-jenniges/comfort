@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -17,7 +18,6 @@ from dateutil.relativedelta import relativedelta
 from .util import sqlite_utils
 from .util.sqlite_utils import validate_identifier
 from .database.information import does_table_exist, get_table_as_df, get_names_of_all_parameter_tables
-from .database.structure import remove_tables_like
 
 
 def _param_table_name(name: str) -> str:
@@ -603,6 +603,10 @@ class Grid:
                    replace_existing: bool = False, include_z_max: bool = True) -> list[str]:
         """Bin each parameter table into this grid and write the result to the database.
 
+        The rows of one parameter at a time are read from the database (SQL-filtered and joined
+        with station), binned in memory and the binned table is written back. Use
+        ``create_wide_table_online`` to merge the mapped tables in SQL.
+
         Args:
             connection (sqlite3.Connection): Connection to the database.
             param_tables (list[str]): Parameter names to map, e.g. "NITRATE" or
@@ -682,6 +686,40 @@ class Grid:
         return mapped_tables
 
 
+def _grid_info_values(lat_min, lat_max, dlat, lon_min, lon_max, dlon,
+                      z_min, z_max, dz, z_array, time_min, time_max, mode, dtime,
+                      selection) -> tuple:
+    """Standardised grid_info column values (without grid_id) for a set of grid parameters.
+
+    Used to store a grid and to look it up again, so the two cannot diverge.
+    ``"None"`` marks absent values.
+    """
+    def _float(v):
+        # Write 0 and 0.0 identically, as text
+        return "None" if v is None else repr(float(v))
+
+    # Depth parameters
+    if z_array is None:
+        # Regular depth grid
+        z_vals = (_float(z_min), _float(z_max), _float(dz), "None")
+    else:
+        # z_array replaces z_min, z_max and dz (and Grid sorts it)
+        z_vals = ("None", "None", "None", json.dumps(sorted(float(z) for z in z_array)))
+
+    def _time(t):
+        # Same date string with or without time of day
+        return "None" if t is None else pd.Timestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+
+    # Time selection as list of bools (1/0 and True/False are the same selection)
+    sel_val = "None" if selection is None else json.dumps([bool(s) for s in selection])
+
+    # Return values in the column order of the grid_info table (after grid_id)
+    return (float(lat_min), float(lat_max), float(dlat),
+            float(lon_min), float(lon_max), float(dlon),
+            *z_vals, _time(time_min), _time(time_max), str(mode),
+            None if dtime is None else int(dtime), sel_val)
+
+
 class GridManager:
     """Persists Grid objects in the database and retrieves them by ID."""
 
@@ -728,13 +766,12 @@ class GridManager:
 
     def add_grid(self, grid: Grid) -> None:
         """Add a Grid in the grid_info table and write its data table."""
-        z_min_val = "None" if grid.z_array is not None else grid.z_min
-        z_max_val = "None" if grid.z_array is not None else grid.z_max
-        dz_val = "None" if grid.z_array is not None else grid.dz
-        z_array_val = (json.dumps(grid.z_array.tolist())
-                       if grid.z_array is not None else "None")
-        sel_val = (json.dumps(grid.selection.tolist())
-                   if grid.selection is not None else "None")
+        # Standardise values for grid_info table
+        info_values = _grid_info_values(
+            grid.lat_min, grid.lat_max, grid.dlat, grid.lon_min, grid.lon_max, grid.dlon,
+            grid.z_min, grid.z_max, grid.dz, grid.z_array,
+            grid.time_min, grid.time_max, grid.mode, grid.dtime, grid.selection,
+        )
 
         # Write grid table first, then the grid_info row, so that a failure never leaves a grid_info row without its table
         validate_identifier(grid.grid_name)
@@ -750,11 +787,7 @@ class GridManager:
                 f"(grid_id, lat_min, lat_max, dlat, lon_min, lon_max, dlon, "
                 f"z_min, z_max, dz, z_array, time_min, time_max, mode, dtime, selection) "
                 f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (grid.grid_id, grid.lat_min, grid.lat_max, grid.dlat,
-                 grid.lon_min, grid.lon_max, grid.dlon,
-                 z_min_val, z_max_val, dz_val, z_array_val,
-                 str(grid.time_min), str(grid.time_max), str(grid.mode),
-                 grid.dtime, sel_val),
+                (grid.grid_id, *info_values),
             )
             self.connection.commit()
         except Exception:
@@ -766,31 +799,39 @@ class GridManager:
             raise
 
     def remove_grid(self, grid_id: int) -> None:
-        """Remove a grid and all its mapped parameter tables from the database."""
-        # Check if grid_id exists
-        if not does_table_exist(self.connection, f"grid_{grid_id}"):
-            return
+        """Remove a grid and all its mapped parameter tables from the database.
 
-        # Load all grids and drop the one to remove from grid information table
-        grids = get_table_as_df(self.connection, "grid_info")
-        grids = grids.drop(grids[grids.grid_id.astype(str) == str(grid_id)].index)
+        The grid_info row and the tables are removed in one transaction, so a failure
+        leaves everything as it was. Removing a grid that does not exist does nothing.
+        """
+        grid_id = int(grid_id)
 
-        # Drop all mapped parameter tables and the grid_table
-        remove_tables_like(self.connection, like_pattern=f"%|_{grid_id}",
-                           escape_char="|", table_type="table")
-        remove_tables_like(self.connection, like_pattern=f"%|_{grid_id}|_%",
-                           escape_char="|", table_type="table")
+        # Tables owned by this grid (mapped parameter and wide tables)
+        owned = re.compile(rf"^.+_{grid_id}(_.+)?$")
+        table_names = [row[0] for row in self.connection.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+        to_drop = [table_name for table_name in table_names if owned.match(table_name)]
 
-        # Write new grid information table
-        grids.to_sql("grid_info", self.connection, if_exists="replace", index=False)
+        # Remove the grid in one transaction
+        try:
+            # Delete grid_info row first
+            self.connection.execute(f"DELETE FROM {self.grid_info_table} WHERE grid_id=?;", (grid_id,))
+
+            # Drop all mapped parameter tables
+            for name in to_drop:
+                validate_identifier(name)
+                self.connection.execute(f"DROP TABLE {name};")
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
 
     def remove_all_grids(self) -> None:
         """Remove every grid from the database."""
         # Get all grid_id entries
-        df_grid_info = get_table_as_df(self.connection, "grid_info")
+        rows = self.connection.execute(f"SELECT grid_id FROM {self.grid_info_table};").fetchall()
 
         # Remove all grids
-        for grid_id in df_grid_info["grid_id"].values:
+        for (grid_id,) in rows:
             self.remove_grid(grid_id)
 
     def load_grid(self, grid_id: int, bathymetry_grid_path: str, lat_variable: str = "lat",
@@ -882,20 +923,11 @@ class GridManager:
                                 time_min=None, time_max=None, mode=None, dtime=None,
                                 selection=None) -> int | None:
         """Return the grid_id of an existing grid matching these parameters, or None."""
-        # Define params
-        params = [lat_min, lat_max, dlat, lon_min, lon_max, dlon]
-
-        # Add depth params
-        if z_array is None:
-            params.extend([z_min, z_max, dz, "None"])
-        else:
-            params.extend(["None", "None", "None",
-                           json.dumps(np.array(z_array).tolist())])
-
-        # Add time selection
-        sel_val = ("None" if selection is None
-                   else json.dumps(np.array(selection).tolist()))
-        params.extend([str(time_min), str(time_max), str(mode), dtime, sel_val])
+        # Standardised values, so that e.g. z_min=0 and z_min=0.0 find the same grid
+        params = _grid_info_values(
+            lat_min, lat_max, dlat, lon_min, lon_max, dlon,
+            z_min, z_max, dz, z_array, time_min, time_max, mode, dtime, selection,
+        )
 
         # Get grid_id from db (dtime is NULL for a grid without time axis, and NULL = NULL is never true)
         query = (

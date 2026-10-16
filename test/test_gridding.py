@@ -935,11 +935,11 @@ class TestAddGrid:
 
     # A failing grid_info insert drops the grid table
     def test_failed_insert_leaves_no_table(self, gm):
-        grid = _make_manager_grid(12)
-        grid.dtime = object()
+        # A grid_info row with this ID but no grid table makes the insert fail
+        gm.connection.execute("INSERT INTO grid_info (grid_id) VALUES (12)")
+        gm.connection.commit()
         with pytest.raises(sqlite3.Error):
-            gm.add_grid(grid)
-        assert not gm.does_grid_exist(12)
+            gm.add_grid(_make_manager_grid(12))
         assert not does_table_exist(gm.connection, "grid_12", "table")
 
     # A grid without time axis (dtime is NULL) is found again by its parameters
@@ -961,6 +961,142 @@ class TestAddGrid:
             gm.add_grid(_make_manager_grid(13))
         assert gm.connection.execute("SELECT x FROM grid_13").fetchall() == [(1,)]
         assert not gm.does_grid_exist(13)
+
+
+def _add_mapped_tables(gm, grid_id):
+    """Add a mapped parameter table and a wide table for a grid, as map_tables/create_wide_table_online do."""
+    gm.connection.execute(f"CREATE TABLE P_NITRATE_{grid_id} (idx INTEGER)")
+    gm.connection.execute(f"CREATE TABLE wide_{grid_id}_555 (idx INTEGER)")
+    gm.connection.commit()
+
+
+class TestRemoveGrid:
+    @pytest.fixture
+    def gm(self, tmp_path):
+        # Dummy grid manager
+        manager = GridManager(str(tmp_path / "test.sqlite"))
+        yield manager
+        manager.close()
+
+    @staticmethod
+    def _table_names(gm):
+        # Get table names
+        return {r[0] for r in gm.connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    # The grid_info row, grid table, mapped tables and wide tables are removed, other grids and tables stay
+    def test_removes_only_this_grid(self, gm):
+        gm.add_grid(_make_manager_grid(31))
+        gm.add_grid(_make_manager_grid(32))
+        _add_mapped_tables(gm, 31)
+        _add_mapped_tables(gm, 32)
+        gm.connection.execute("CREATE TABLE P_NITRATE (ID INTEGER)")
+
+        gm.remove_grid(31)
+
+        assert not gm.does_grid_exist(31)
+        assert gm.does_grid_exist(32)
+        assert self._table_names(gm) == {"grid_info", "grid_32", "P_NITRATE_32", "wide_32_555", "P_NITRATE"}
+
+    # grid_info keeps its primary key and column types after removing a grid
+    def test_keeps_grid_info_schema(self, gm):
+        gm.add_grid(_make_manager_grid(31))
+        gm.add_grid(_make_manager_grid(32))
+        before = gm.connection.execute("PRAGMA table_info(grid_info)").fetchall()
+        gm.remove_grid(31)
+        assert gm.connection.execute("PRAGMA table_info(grid_info)").fetchall() == before
+        with pytest.raises(sqlite3.IntegrityError):
+            gm.connection.execute("INSERT INTO grid_info (grid_id) VALUES (32)")
+
+    # A custom grid_info table name is used, the default one is not touched
+    def test_custom_grid_info_table(self, tmp_path):
+        with GridManager(str(tmp_path / "test.sqlite"), "my_info") as gm:
+            gm.add_grid(_make_manager_grid(33))
+            gm.connection.execute("CREATE TABLE grid_info (grid_id)")
+            gm.connection.execute("INSERT INTO grid_info VALUES (99)")
+            gm.remove_grid(33)
+            assert not gm.does_grid_exist(33)
+            assert gm.connection.execute("SELECT grid_id FROM grid_info").fetchall() == [(99,)]
+
+    # A row in grid_info whose grid table is already gone is still removed
+    def test_removes_row_without_table(self, gm):
+        gm.add_grid(_make_manager_grid(34))
+        gm.connection.execute("DROP TABLE grid_34")
+        gm.connection.commit()
+        gm.remove_grid(34)
+        assert not gm.does_grid_exist(34)
+
+    # remove_all_grids empties grid_info and drops every grid's tables
+    def test_remove_all_grids(self, gm):
+        gm.add_grid(_make_manager_grid(35))
+        gm.add_grid(_make_manager_grid(36))
+        _add_mapped_tables(gm, 35)
+        gm.remove_all_grids()
+        assert gm.connection.execute("SELECT COUNT(*) FROM grid_info").fetchone() == (0,)
+        assert self._table_names(gm) == {"grid_info"}
+
+    # Removing an unknown grid does nothing
+    def test_unknown_grid_is_noop(self, gm):
+        gm.add_grid(_make_manager_grid(37))
+        gm.remove_grid(12345)
+        assert gm.does_grid_exist(37)
+
+    # A failure while dropping rolls back the row deletion and the earlier drops
+    def test_failure_rolls_back(self, gm):
+        gm.add_grid(_make_manager_grid(38))
+        _add_mapped_tables(gm, 38)
+        # An invalid table name makes validate_identifier raise part-way through the drops
+        gm.connection.execute('CREATE TABLE "bad name_38" (x)')
+        gm.connection.commit()
+        with pytest.raises(ValueError):
+            gm.remove_grid(38)
+        assert gm.does_grid_exist(38)
+        assert {"grid_38", "P_NITRATE_38", "wide_38_555"} <= self._table_names(gm)
+
+
+class TestGridLookup:
+    """get_grid_id_from_params finds a stored grid independent of how its parameters are written."""
+
+    @pytest.fixture
+    def gm(self, tmp_path):
+        # Dummy grid manager
+        manager = GridManager(str(tmp_path / "test.sqlite"))
+        yield manager
+        manager.close()
+
+    @staticmethod
+    def _stored(gm, grid_id, **overrides):
+        # Build test grid, optionally override parameters
+        grid = _make_manager_grid(grid_id)
+        for k, v in overrides.items():
+            setattr(grid, k, v)
+        gm.add_grid(grid)
+
+    # Define a base row in grid_info table
+    _BASE = dict(lat_min=0, lat_max=10, dlat=5, lon_min=0, lon_max=10, dlon=5,
+                 z_min=0, z_max=100, dz=50, time_min="2000-01-01 00:00:00",
+                 time_max="2001-01-01", mode="Y", dtime=1)
+
+    # int and float depth parameters describe the same grid
+    def test_int_and_float_depths_match(self, gm):
+        self._stored(gm, 41)
+        assert gm.get_grid_id_from_params(**{**self._BASE, "z_min": 0.0, "z_max": 100.0, "dz": 50.0}) == 41
+
+    # Date strings with or without time of day describe the same grid
+    def test_equivalent_time_strings_match(self, gm):
+        self._stored(gm, 42)
+        assert gm.get_grid_id_from_params(**{**self._BASE, "time_min": "2000-01-01", "time_max": "2001-01-01 00:00:00"}) == 42
+
+    # z_array: order and int/float do not matter (Grid sorts it)
+    def test_z_array_order_and_type_do_not_matter(self, gm):
+        self._stored(gm, 43, z_array=np.array([0.0, 50.0, 100.0]))
+        params = {k: v for k, v in self._BASE.items() if k not in ("z_min", "z_max", "dz")}
+        assert gm.get_grid_id_from_params(**params, z_array=[100, 0, 50]) == 43
+
+    # Different grids are told apart
+    def test_different_grid_not_found(self, gm):
+        self._stored(gm, 44)
+        assert gm.get_grid_id_from_params(**{**self._BASE, "dz": 25}) is None
+        assert gm.get_grid_id_from_params(**{**self._BASE, "dtime": 2}) is None
 
 
 def _make_time_grid_stub(mode, dtime):
