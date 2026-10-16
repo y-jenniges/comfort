@@ -16,7 +16,6 @@ from comfort.database.information import does_table_exist, get_table_as_df
 from comfort.gridding import (
     Grid,
     GridManager,
-    SpaceGrid,
     generate_grid_id,
     average_duplicate_locations,
     create_wide_table_online,
@@ -215,7 +214,7 @@ class TestDropLandCells:
         counts = result.groupby("DATEANDTIME").size()
         assert counts["2000"] == counts["2001"]
 
-    # --- SpaceGrid behaviour --------------------------------------------- #
+    # --- Grid without time axis ------------------------------------------------ #
     def _make_wide_no_time(self, water, val):
         """Each row is a distinct grid cell (distinct LATITUDE)."""
         return pd.DataFrame({
@@ -309,6 +308,24 @@ class TestGridValidation:
         with pytest.raises(ValueError, match="mode"):
             Grid(**{**self._COMMON_PARAMS, "mode": "INVALID", "bathymetry_grid_path": "/nonexistent/path.nc"})
 
+    # The time parameters are all-or-nothing
+    @pytest.mark.parametrize("missing", ["time_min", "time_max", "mode", "dtime"])
+    def test_partial_time_parameters_raise(self, missing):
+        with pytest.raises(ValueError, match=missing):
+            Grid(**{**self._COMMON_PARAMS, missing: None})
+
+    # Grid is accepted without time parameters (then fails on the missing bathymetry file)
+    def test_no_time_parameters_accepted(self):
+        params = {**self._COMMON_PARAMS, "time_min": None, "time_max": None, "mode": None, "dtime": None}
+        with pytest.raises(FileNotFoundError):
+            Grid(**params)
+
+    # A time selection needs a time axis
+    def test_selection_without_time_raises(self):
+        params = {**self._COMMON_PARAMS, "time_min": None, "time_max": None, "mode": None, "dtime": None, "selection": [True]}
+        with pytest.raises(ValueError, match="selection"):
+            Grid(**params)
+
     # Latitude bounds outside [-90, 90] are rejected
     def test_lat_out_of_range_raises(self):
         with pytest.raises(ValueError):
@@ -390,12 +407,12 @@ def _make_grid_stub(mode="Y", time_array=("2000-01-01 00:00:00",), time_max="200
     return grid
 
 
-def _make_space_grid_stub():
-    """Build a dummy SpaceGrid (no bathymetry/xarray needed)."""
-    grid = object.__new__(SpaceGrid)
+def _make_no_time_grid_stub():
+    """Build a dummy Grid without time axis (no bathymetry/xarray needed)."""
+    grid = object.__new__(Grid)
     for k, v in dict(
         lat_min=0, lat_max=10, dlat=5, lon_min=0, lon_max=10, dlon=5,
-        z_min=0, z_max=100, dz=50, z_array=None,
+        z_min=0, z_max=100, dz=50, z_array=None, mode=None,
     ).items():
         setattr(grid, k, v)
     grid.grid = _full_grid_df(with_time=False)
@@ -519,10 +536,10 @@ class TestGridBinSeasonalMean:
         assert cell["P_TEMPERATURE"].iloc[0] == 10.0
 
 
-class TestSpaceGridBin:
-    # SpaceGrid.bin() has no time axis, so it delegates straight to bin_space()
+class TestNoTimeGridBin:
+    # A grid without time axis delegates bin() straight to bin_space()
     def test_bin_delegates_to_bin_space(self):
-        grid = _make_space_grid_stub()
+        grid = _make_no_time_grid_stub()
         df = pd.DataFrame({
             "LATITUDE": [1.0, 2.0],
             "LONGITUDE": [1.0, 2.0],
@@ -533,13 +550,62 @@ class TestSpaceGridBin:
         assert len(result) == 1
         assert result["VAL"].iloc[0] == 2.0
 
+    # Time operations are rejected instead of silently doing nothing
+    def test_time_operations_raise(self):
+        grid = _make_no_time_grid_stub()
+        df = pd.DataFrame({"LATITUDE": [1.0], "LONGITUDE": [1.0], "LEV_M": [10.0], "VAL": [1.0]})
+        with pytest.raises(ValueError, match="time axis"):
+            grid.bin_time(df, "VAL")
+        with pytest.raises(ValueError, match="time axis"):
+            grid.bin(df, "VAL", agg="seasonal_mean")
+
+    # has_time follows from mode
+    def test_has_time(self):
+        assert not _make_no_time_grid_stub().has_time
+        assert _make_grid_stub().has_time
+
+
+class TestNoTimeMapTables:
+    """Test Grid.map_tables for a grid without time axis against an in-memory database."""
+
+    @staticmethod
+    def _conn():
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE station (ID INTEGER, LATITUDE REAL, LONGITUDE REAL, DATEANDTIME TEXT)")
+        conn.execute("CREATE TABLE P_NITRATE (ID INTEGER, LEV_M REAL, VAL REAL)")
+        conn.executemany("INSERT INTO station VALUES (?, ?, ?, ?)", [
+            (1, 1.0, 1.0, "2000-01-01 00:00:00"),
+            (2, 2.0, 2.0, "2000-01-02 00:00:00"),
+            (3, 20.0, 1.0, "2000-01-03 00:00:00"),  # outside the grid extent
+        ])
+        conn.executemany("INSERT INTO P_NITRATE VALUES (?, ?, ?)",
+                         [(1, 10.0, 1.0), (2, 20.0, 3.0), (3, 10.0, 99.0)])
+        return conn
+
+    # Coordinates come from station, observations in one cell are aggregated, bare names work
+    def test_joins_station_and_aggregates_per_cell(self):
+        grid = _make_no_time_grid_stub()
+        grid.grid_id = 998
+        conn = self._conn()
+        mapped = grid.map_tables(conn, param_tables=["NITRATE"])
+
+        assert mapped == ["P_NITRATE_998"]
+        out = get_table_as_df(conn, "P_NITRATE_998")
+        assert "DATEANDTIME" not in out.columns
+        # The out-of-extent observation is dropped, the two others share one cell
+        assert len(out) == 1
+        assert out["P_NITRATE"].iloc[0] == 2.0
+        assert out["count"].iloc[0] == 2
+        assert out["median"].iloc[0] == 2.0
+        assert out["idx"].notna().all()
+
 
 class TestMapDataframes:
     """Test map_dataframes, which first creates the grid and then maps the data to it."""
 
     # Multiple parameters merge onto the same full grid template, each as its own P_<name> column
     def test_merges_multiple_parameters_onto_full_template(self):
-        grid = _make_space_grid_stub()
+        grid = _make_no_time_grid_stub()
         dataframes = {
             "NITRATE": pd.DataFrame({
                 "LATITUDE": [1.0, 2.0], "LONGITUDE": [1.0, 2.0], "LEV_M": [10.0, 10.0],
@@ -562,7 +628,7 @@ class TestMapDataframes:
 
     # bin_fn overrides the default mean aggregation with a custom per-parameter function
     def test_custom_bin_fn_overrides_default_agg(self):
-        grid = _make_space_grid_stub()
+        grid = _make_no_time_grid_stub()
         calls = []
 
         def bin_fn(df, value_col):
@@ -596,7 +662,7 @@ class TestMapDataframes:
 
     # dropping_land_cells=True (default) removes a land cell with no data for any parameter
     def test_drops_empty_land_cells_by_default(self):
-        grid = _make_space_grid_stub()
+        grid = _make_no_time_grid_stub()
         # Mark one cell as land with no data anywhere for any parameter
         grid.grid.loc[
             (grid.grid["LATITUDE"] == 2.5) & (grid.grid["LONGITUDE"] == 2.5)
@@ -612,7 +678,7 @@ class TestMapDataframes:
 
     # dropping_land_cells=False keeps that same empty land cell
     def test_dropping_land_cells_false_keeps_empty_land_cells(self):
-        grid = _make_space_grid_stub()
+        grid = _make_no_time_grid_stub()
         grid.grid.loc[
             (grid.grid["LATITUDE"] == 2.5) & (grid.grid["LONGITUDE"] == 2.5)
             & (grid.grid["LEV_M"] == 0.0), "water",
@@ -875,6 +941,16 @@ class TestAddGrid:
             gm.add_grid(grid)
         assert not gm.does_grid_exist(12)
         assert not does_table_exist(gm.connection, "grid_12", "table")
+
+    # A grid without time axis (dtime is NULL) is found again by its parameters
+    def test_no_time_grid_found_by_params(self, gm):
+        grid = _make_no_time_grid_stub()
+        for k, v in dict(grid_id=21, grid_name="grid_21", selection=None,
+                         time_min=None, time_max=None, dtime=None).items():
+            setattr(grid, k, v)
+        gm.add_grid(grid)
+        found = gm.get_grid_id_from_params(0, 10, 5, 0, 10, 5, z_min=0, z_max=100, dz=50)
+        assert found == 21
 
     # A table with the grid name that already exists is not overwritten
     def test_existing_table_not_overwritten(self, gm):

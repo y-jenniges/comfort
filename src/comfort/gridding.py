@@ -56,8 +56,142 @@ def _is_multiple(span: float, step: float) -> bool:
     return abs(n - round(n)) < 1e-9
 
 
-class _BaseGrid:
-    """Shared grid logic for Grid and SpaceGrid."""
+class Grid:
+    """A grid based on a bathymetry file, with or without a time axis.
+    Lat/lon are cell-centred, time and depth are node-centred.
+
+    The grid has a time axis if the time parameters (``time_min``, ``time_max``,
+    ``mode``, ``dtime``) are given. Leave all of them as None for a purely spatial grid.
+    """
+
+    # Time modes
+    _VALID_MODES = ["Y", "M", "D", "YM", "YD", "MD"]
+
+    def __init__(self, lat_min=-90, lat_max=90, dlat=1, lon_min=-180, lon_max=180, dlon=1,
+                 bathymetry_grid_path=None,
+                 z_min=None, z_max=None, dz=None, z_array=None,
+                 time_min=None, time_max=None, mode=None, dtime=None, selection=None,
+                 lat_variable="lat", lon_variable="lon", depth_variable="elevation",
+                 grid_id=None):
+        """
+        Args:
+            lat_min, lat_max, dlat: Latitude range and step [°].
+            lon_min, lon_max, dlon: Longitude range and step [°].
+            bathymetry_grid_path (str): Path to a bathymetry NetCDF file. Required.
+            z_min, z_max, dz: Depth range and step [m]. Provide either dz or z_array.
+            z_array (array-like): Explicit depth nodes [m]. Mutually exclusive with dz.
+            time_min, time_max (str): Date strings bounding the time dimension.
+            mode (str): Time grouping mode. One of 'Y', 'M', 'D', 'YM', 'YD', 'MD'.
+            dtime (int): Number of time units per cell.
+                time_min, time_max, mode and dtime must be given together, or all be
+                None for a grid without time axis.
+            selection (array-like): Boolean mask to sub-select the time array.
+                Requires a time axis.
+            lat_variable, lon_variable, depth_variable: Variable names in the NetCDF file.
+            grid_id: Existing ID to use instead of generating a new one.
+        """
+        # Grid specs
+        self.grid_id = grid_id if grid_id else generate_grid_id()
+        self.grid_name = f"grid_{self.grid_id}"
+
+        # Init grid params
+        self.lat_min = lat_min
+        self.lat_max = lat_max
+        self.dlat = dlat
+        self.lon_min = lon_min
+        self.lon_max = lon_max
+        self.dlon = dlon
+        self.z_array = np.sort(np.array(z_array)) if z_array is not None else None
+        self.z_min = z_min if z_array is None else self.z_array.min()
+        self.z_max = z_max if z_array is None else self.z_array.max()
+        self.dz = dz
+        self.time_min = time_min
+        self.time_max = time_max
+        self.mode = mode
+        self.dtime = dtime
+        self.selection = np.array(selection) if selection is not None else None
+        self.bathymetry_grid_path = bathymetry_grid_path
+
+        self._check_spatial_input()
+        self._check_time_input()
+
+        # Create grid
+        self.time_array = self._create_time_array() if self.has_time else None
+        self.grid = self._create_grid(lat_variable, lon_variable, depth_variable)
+
+    @property
+    def has_time(self) -> bool:
+        """Whether this grid has a time axis (derived from *mode*)."""
+        return self.mode is not None
+
+    def _check_time_input(self) -> None:
+        """Consistency checks for time input."""
+        # Time parameters are all-or-nothing
+        time_params = {"time_min": self.time_min, "time_max": self.time_max, "mode": self.mode, "dtime": self.dtime}
+        missing = [name for name, val in time_params.items() if val is None]
+        if len(missing) == len(time_params):
+            # No time axis, so a time selection has nothing to select from
+            if self.selection is not None:
+                raise ValueError("selection requires a time axis (time_min, time_max, mode, dtime)")
+            return
+        if missing:
+            raise ValueError(
+                f"Grid parameters {missing} must not be None when a time axis is used. "
+                "Set all of time_min, time_max, mode and dtime or none of them."
+            )
+
+        # Time step >=1
+        if self.dtime < 1:
+            raise ValueError("dtime must be >= 1")
+
+        # Valid modes
+        if self.mode not in self._VALID_MODES:
+            raise ValueError(f"mode must be one of {self._VALID_MODES}")
+
+        # Type of selection object
+        if self.selection is not None and not isinstance(self.selection, (np.ndarray, list)):
+            raise ValueError("selection must be a list or numpy array")
+
+    @staticmethod
+    def _iter_range(start, end, step):
+        """Yield datetimes from start to end (exclusive) by relativedelta step."""
+        from dateutil.parser import parse as _parse_dt
+        current = _parse_dt(start) if isinstance(start, str) else start
+        end_dt = _parse_dt(end) if isinstance(end, str) else end
+        while current < end_dt:
+            yield current
+            current += step
+
+    def _create_time_array(self) -> np.ndarray:
+        """Create the time array containing the time steps for the grid."""
+        time_array = []
+
+        # Determine all valid dates for the desired time range
+        if self.mode == "Y":
+            time_array = [v.strftime("%Y-%m-%d %H:%M:%S")
+                          for v in self._iter_range(self.time_min, self.time_max, relativedelta(years=+self.dtime))]
+        elif self.mode == "YM":
+            time_array = [v.strftime("%Y-%m-%d %H:%M:%S")
+                          for v in self._iter_range(self.time_min, self.time_max, relativedelta(months=+self.dtime))]
+        elif self.mode == "YD":
+            time_array = [v.strftime("%Y-%m-%d %H:%M:%S")
+                          for v in self._iter_range(self.time_min, self.time_max, relativedelta(days=+int(self.dtime)))]
+        elif self.mode == "M":
+            time_array = np.char.zfill(np.arange(1, 13, self.dtime).astype(str), 2)
+        elif self.mode == "MD":
+            time_array = [v.strftime("%m-%d %H:%M:%S")
+                          for v in self._iter_range("2000-01-01", "2001-01-01", relativedelta(days=+int(self.dtime)))]
+        elif self.mode == "D":
+            time_array = np.char.zfill(np.arange(1, 32, self.dtime).astype(str), 2)
+
+        # Perform selection
+        time_array = np.array(time_array)
+        if self.selection is not None:
+            if time_array.shape != self.selection.shape:
+                raise ValueError("selection shape must match time_array shape")
+            time_array = time_array[self.selection.astype(bool)]
+
+        return time_array
 
     def _open_bathymetry(self, bathymetry_grid_path: str, lat_variable: str,
                          lon_variable: str, depth_variable: str):
@@ -209,6 +343,34 @@ class _BaseGrid:
         first_stat = agg[0] if isinstance(agg[0], str) else agg[0].__name__
         return grouped.rename(columns={first_stat: value_col})
 
+    def _fetch_parameter(self, connection: sqlite3.Connection, table: str,
+                         include_z_max: bool) -> pd.DataFrame:
+        """Read one P_* table inside this grid's extent, with coordinates and time from the station table."""
+        # Join with the station table (to get lat, lon and time)
+        z_eq = "<=" if include_z_max else "<"
+        q = (f"SELECT s.LATITUDE, s.LONGITUDE, p.LEV_M, p.VAL, "
+             f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
+             f"FROM {table} p LEFT JOIN station s ON p.ID = s.ID WHERE "
+             f"s.LATITUDE >= ? AND s.LATITUDE <= ? AND "
+             f"s.LONGITUDE >= ? AND s.LONGITUDE <= ? AND "
+             f"p.LEV_M >= ? AND p.LEV_M {z_eq} ?")
+
+        # Convert to native Python types
+        bind = [float(self.lat_min), float(self.lat_max),
+                float(self.lon_min), float(self.lon_max),
+                float(self.z_min), float(self.z_max)]
+
+        # Add time conditions
+        if self.has_time:
+            q +=" AND s.DATEANDTIME >= ? AND s.DATEANDTIME <= ?"
+            bind += [str(self.time_min), str(self.time_max)]
+        logging.debug(q)
+
+        # Execute query
+        cur = connection.execute(q, bind)
+        df = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
+        return df if self.has_time else df.drop(columns="DATEANDTIME")
+
     def bin_space(self, df: pd.DataFrame, value_col: str | None = None, agg: None | str | list[str]=None) -> pd.DataFrame:
         """Bin LATITUDE/LONGITUDE/LEV_M in *df* onto this grid's cell centres.
 
@@ -249,21 +411,17 @@ class _BaseGrid:
 
         The full workflow is two calls: create the grid, then map data onto it::
 
-            grid = Grid(...)  # or SpaceGrid(...)
-            df_wide = grid.map_dataframes(raw)  # bin + merge every parameter
-
-        For each parameter, this performs binning, i.e. snapping the
-        coordinates onto the grid cells (and aggregate) and merging, i.e.
-        merge each parameter's binned result onto a copy of the full grid.
+            grid = Grid(...)
+            df_wide = grid.map_dataframes(raw)
 
         Args:
             dfs (dict[str, pandas.DataFrame]): Parameter name -> DataFrame,
                 Each DataFrame must contain LATITUDE, LONGITUDE, LEV_M
-                (+ DATEANDTIME for a ``Grid``) and a value column named
+                (+ DATEANDTIME for a grid with time axis) and a value column named
                 after its parameter key.
             agg: Aggregation passed to ``self.bin(df, value_col, agg=agg)`` for
                 every parameter. A string ("mean"), a list, a callable, or
-                (on a ``Grid``) ``"seasonal_mean"`` for monthly-first annual
+                (on a grid with time axis) ``"seasonal_mean"`` for monthly-first annual
                 averaging before binning onto the grid's time steps. Ignored
                 when *bin_fn* is given.
             bin_fn (callable): ``(df, value_col) -> DataFrame`` used instead of
@@ -302,6 +460,226 @@ class _BaseGrid:
             logging.info("map_dataframes: dropped %d empty land cells (%d -> %d rows)",
                         n_before - len(df_wide), n_before, len(df_wide))
         return df_wide
+
+    def _create_grid(self, lat_variable: str, lon_variable: str,
+                      depth_variable: str) -> pd.DataFrame:
+        """Creating a grid based on:
+        https://github.com/willirath/geomar-open-hacky-hour-2021-04/blob/main/2022-06-23/etopo05_to_grid.ipynb
+        grid must be nc file, format: latitude, longitude, depth
+        """
+        import xarray as xr
+
+        # Load bathymetry
+        ds = self._open_bathymetry(self.bathymetry_grid_path, lat_variable, lon_variable, depth_variable)
+
+        # Define cell-centered lat/lon values
+        lat = xr.DataArray(np.arange(self.lat_min + self.dlat / 2, self.lat_max, self.dlat), dims="LATITUDE")
+        lon = xr.DataArray(np.arange(self.lon_min + self.dlon / 2, self.lon_max, self.dlon), dims="LONGITUDE")
+
+        # Add water mask (and time dimension, if the grid has one)
+        water_filled = self._water_mask(ds, lat, lon)
+        if self.has_time:
+            water_filled = water_filled.expand_dims(DATEANDTIME=self.time_array)
+
+        # Convert to df
+        df = water_filled.to_dataframe().reset_index()
+
+        dtypes = {"LEV_M": float, "LATITUDE": float, "LONGITUDE": float, "water": bool}
+        if self.has_time:
+            dtypes["DATEANDTIME"] = str
+        return df.astype(dtypes)
+
+    def _map_time(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Bin the DATEANDTIME column, according to self.mode."""
+        if self.mode in ("Y", "YM", "YD"):
+            time_bins = pd.DatetimeIndex(self.time_array)
+            time_bins = time_bins.union([pd.Timestamp(self.time_max) + pd.Timedelta(nanoseconds=1)])
+            df["DATEANDTIME"] = pd.cut(
+                pd.to_datetime(df["DATEANDTIME"]),
+                bins=time_bins, labels=time_bins[:-1], right=False,
+            )
+            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%Y-%m-%d %H:%M:%S")
+        elif self.mode == "M":
+            # Snap the month to the first month of its bin
+            dates = df["DATEANDTIME"].astype("datetime64[ns]")
+            bin_index = (dates.dt.month - 1) // self.dtime
+            node = bin_index * self.dtime + 1  # get the grid node, i.e. the month
+            df["DATEANDTIME"] = node.astype("Int64").astype(str).str.zfill(2)
+        elif self.mode == "MD":
+            # Snap the day-month bin
+            dates = df["DATEANDTIME"].astype("datetime64[ns]")
+            # Days index of the year (1 Jan = 0)
+            day_index = dates.dt.dayofyear - 1
+            # Check if the day is from a non-leap year after February
+            after_feb_non_leap = (~dates.dt.is_leap_year) & (dates.dt.month > 2)
+            # Add one day for non-leap years after February (to align with leap reference year)
+            day_index = day_index + after_feb_non_leap.astype(int)
+            # Start of the dtime-day bin the day falls into
+            bin_index = day_index // self.dtime
+            node_day = bin_index * self.dtime
+            # Turn the day number back into a date in 2000 (midnight, so the time of day is dropped)
+            node = pd.Timestamp("2000-01-01") + pd.to_timedelta(node_day, unit="D")
+            df["DATEANDTIME"] = node.dt.strftime("%m-%d %H:%M:%S")
+        elif self.mode == "D":
+            # Snap the day to the first day of its bin
+            dates = df["DATEANDTIME"].astype("datetime64[ns]")
+            bin_idx = (dates.dt.day - 1) // self.dtime
+            node = bin_idx * self.dtime + 1
+            df["DATEANDTIME"] = node.astype("Int64").astype(str).str.zfill(2)
+
+        return df
+
+    def bin_time(self, df: pd.DataFrame, value_col: str, agg="mean") -> pd.DataFrame:
+        """Bin DATEANDTIME in *df* onto this grid's time steps and aggregate *value_col*.
+
+        LATITUDE/LONGITUDE/LEV_M must already be snapped to grid cell centres (e.g. by calling ``bin_space`` first).
+        Rows are then grouped by cell + time bin together.
+
+        Args:
+            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M, DATEANDTIME and *value_col*.
+            value_col (str): Column to aggregate.
+            agg: Aggregation passed to ``DataFrame.agg``.
+        Returns:
+            pandas.DataFrame: One row per occupied cell and time step.
+        """
+        if not self.has_time:
+            raise ValueError("bin_time requires a grid with time axis (time_min, time_max, mode, dtime)")
+
+        # Grid DATEANDTIME
+        df = self._map_time(df.copy())
+
+        # Group rows in the same cell and time bin and aggregate value_col
+        grouped = df.groupby(
+            ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"], as_index=False,
+        ).agg({value_col: agg})
+        grouped = self._flatten_bin_agg(grouped, value_col, agg)
+        grouped[value_col] = grouped[value_col].astype(float)
+        grouped["DATEANDTIME"] = grouped["DATEANDTIME"].astype(str)
+        return grouped
+
+    def bin(self, df: pd.DataFrame, value_col: str, agg: str | list[str] ="mean") -> pd.DataFrame:
+        """Bin *df* onto this grid's spatial cells and time steps, aggregating
+        *value_col* per cell. Usable for data already in memory (e.g. after ``load_comfort``).
+
+        Args:
+            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M, *value_col* (+ DATEANDTIME for a grid with time axis).
+            value_col (str): Column to aggregate.
+            agg: Aggregation passed to ``DataFrame.agg``. The special
+                value ``"seasonal_mean"`` (grid with time axis only) runs
+                monthly-first annual averaging before binning onto this
+                grid's time steps (common for yearly gridding).
+        Returns:
+            pandas.DataFrame: One row per occupied cell (and time step).
+        """
+        if not self.has_time:
+            # No-time grid
+            if agg == "seasonal_mean":
+                raise ValueError("agg='seasonal_mean' requires a grid with time axis")
+            return self.bin_space(df, value_col, agg)
+        if agg == "seasonal_mean":
+            # Apply seasonal-mean to time grid
+            return self._bin_seasonal_mean(df, value_col)
+        return self.bin_time(self.bin_space(df), value_col, agg)
+
+    def _bin_seasonal_mean(self, df: pd.DataFrame, value_col: str) -> pd.DataFrame:
+        """Average value_col per grid cell per year, monthly-first, then bin onto this grid's time steps.
+
+        Implements ``agg="seasonal_mean"`` on ``bin``. A plain annual mean lets
+        months with more observations dominate. Averaging month-by-month first,
+        then averaging those (at most 12) monthly means, corrects for that.
+        """
+        # Grid space, then compute the monthly-first annual mean per cell
+        annual = seasonal_mean(
+            self.bin_space(df), value_col=value_col,
+            group_cols=["LATITUDE", "LONGITUDE", "LEV_M"],
+        )
+
+        # Convert YEAR returned by seasonal_mean into a time stamp
+        annual["DATEANDTIME"] = annual["YEAR"].astype(int).astype(str) + "-01-01 00:00:00"
+        annual = annual.drop(columns=["YEAR"])
+        return self.bin_time(annual, value_col, agg="mean")
+
+    def map_tables(self, connection: sqlite3.Connection, param_tables: list[str] | None = None,
+                   replace_existing: bool = False, include_z_max: bool = True) -> list[str]:
+        """Bin each parameter table into this grid and write the result to the database.
+
+        Args:
+            connection (sqlite3.Connection): Connection to the database.
+            param_tables (list[str]): Parameter names to map, e.g. "NITRATE" or
+                "P_NITRATE" (both accepted). None maps all parameter tables.
+                LATITUDE/LONGITUDE (and DATEANDTIME, for a grid with time axis)
+                are joined from station.
+            replace_existing (bool): Replace already-mapped tables without prompting. Default is False.
+            include_z_max (bool): Include the maximum depth value. Default is True.
+        Returns:
+            list[str]: Names of the mapped tables in the database.
+        """
+        logging.info("Mapping tables to grid...")
+        connection.create_aggregate("median", 1, sqlite_utils.Median)
+        connection.create_aggregate("std", 1, sqlite_utils.Std)
+
+        # Determine parameter table names
+        if not param_tables:
+            param_tables = get_names_of_all_parameter_tables(connection)
+
+        mapped_tables = []
+        for table in param_tables:
+            # Normalise to the P_* table name and validate it
+            table = _param_table_name(table)
+            validate_identifier(table)
+
+            # Check if table already exists
+            existing = does_table_exist(connection, f"{table}_{self.grid_id}", "table")
+
+            # Check if table should be replaced
+            if existing and not replace_existing:
+                # Append existing table name
+                logging.info(f"Skipping already-mapped table {table}_{self.grid_id}")
+                mapped_tables.append(f"{table}_{self.grid_id}")
+                continue
+            elif existing:
+                connection.execute(f"DROP TABLE {table}_{self.grid_id};")
+
+            # Build SQL query to get table data, joining LATITUDE/LONGITUDE/DATEANDTIME from STATION
+            df = self._fetch_parameter(connection, table, include_z_max)
+            logging.info(f"  {table}: fetched {len(df)} rows")
+
+            # Bin onto grid cells (and time steps), aggregating (mean, median, std, count)
+            df_grouped = self.bin(df, "VAL", agg=["mean", "median", "std", "count"])
+            logging.info(f"  {table}: binned to {len(df_grouped)} occupied cells")
+
+            grid_name = f"grid_{self.grid_id}"
+            # Add grid to database (if not yet included)
+            if not does_table_exist(connection, grid_name, "table"):
+                self.grid.to_sql(grid_name, connection, if_exists="replace",
+                                 index=True, index_label="idx")
+                logging.warning(
+                    "Grid was added to the database without a GridManager - "
+                    "it will not appear in grid_info."
+                )
+
+            # Write mapped table to database
+            df_grouped.to_sql(f"temp_{table}_{self.grid_id}", connection,
+                              if_exists="replace", index=False)
+
+            # Add grid index to the table (DATEANDTIME only exists for a grid with time axis)
+            time_sel = ", t.DATEANDTIME" if self.has_time else ""
+            time_key = ", DATEANDTIME" if self.has_time else ""
+            connection.execute(
+                f"CREATE TABLE {table}_{self.grid_id} AS "
+                f"SELECT g.idx, "
+                f"t.LATITUDE, t.LONGITUDE, t.LEV_M{time_sel}, "
+                f"t.VAL AS {table}, t.median, t.std, t.count "
+                f"FROM temp_{table}_{self.grid_id} AS t "
+                f"LEFT JOIN grid_{self.grid_id} AS g "
+                f"USING(LATITUDE, LONGITUDE, LEV_M{time_key});"
+            )
+
+            # Drop temporary mapped table
+            connection.execute(f"DROP TABLE temp_{table}_{self.grid_id};")
+            mapped_tables.append(f"{table}_{self.grid_id}")
+
+        return mapped_tables
 
 
 class GridManager:
@@ -519,510 +897,16 @@ class GridManager:
                    else json.dumps(np.array(selection).tolist()))
         params.extend([str(time_min), str(time_max), str(mode), dtime, sel_val])
 
-        # Get grid_id from db
+        # Get grid_id from db (dtime is NULL for a grid without time axis, and NULL = NULL is never true)
         query = (
             f"SELECT grid_id FROM {self.grid_info_table} WHERE "
             f"lat_min=? AND lat_max=? AND dlat=? AND "
             f"lon_min=? AND lon_max=? AND dlon=? AND "
             f"z_min=? AND z_max=? AND dz=? AND z_array=? AND "
-            f"time_min=? AND time_max=? AND mode=? AND dtime=? AND selection=?"
+            f"time_min=? AND time_max=? AND mode=? AND dtime IS ? AND selection=?"
         )
         res = self.connection.execute(query, params).fetchall()
         return res[0][0] if res else None
-
-
-class Grid(_BaseGrid):
-    """A spatio-temporal grid based on a bathymetry file.
-    Lat/lon are cell-centred, time and depth are node-centred.
-    """
-
-    # Time modes
-    _VALID_MODES = [None, "Y", "M", "D", "YM", "YD", "MD"]
-
-    def __init__(self, lat_min=-90, lat_max=90, dlat=1, lon_min=-180, lon_max=180, dlon=1,
-                 bathymetry_grid_path=None,
-                 z_min=None, z_max=None, dz=None, z_array=None,
-                 time_min=None, time_max=None, mode=None, dtime=None, selection=None,
-                 lat_variable="lat", lon_variable="lon", depth_variable="elevation",
-                 grid_id=None):
-        """
-        Args:
-            lat_min, lat_max, dlat: Latitude range and step [°].
-            lon_min, lon_max, dlon: Longitude range and step [°].
-            bathymetry_grid_path (str): Path to a bathymetry NetCDF file. Required.
-            z_min, z_max, dz: Depth range and step [m]. Provide either dz or z_array.
-            z_array (array-like): Explicit depth nodes [m]. Mutually exclusive with dz.
-            time_min, time_max (str): Date strings bounding the time dimension.
-            mode (str): Time grouping mode. One of None, 'Y', 'M', 'D', 'YM', 'YD', 'MD'.
-            dtime (int): Number of time units per cell.
-            selection (array-like): Boolean mask to sub-select the time array.
-            lat_variable, lon_variable, depth_variable: Variable names in the NetCDF file.
-            grid_id: Existing ID to use instead of generating a new one.
-        """
-        # Grid specs
-        self.grid_id = grid_id if grid_id else generate_grid_id()
-        self.grid_name = f"grid_{self.grid_id}"
-
-        # Init grid params
-        self.lat_min = lat_min
-        self.lat_max = lat_max
-        self.dlat = dlat
-        self.lon_min = lon_min
-        self.lon_max = lon_max
-        self.dlon = dlon
-        self.z_array = np.sort(np.array(z_array)) if z_array is not None else None
-        self.z_min = z_min if z_array is None else self.z_array.min()
-        self.z_max = z_max if z_array is None else self.z_array.max()
-        self.dz = dz
-        self.time_min = time_min
-        self.time_max = time_max
-        self.mode = mode
-        self.dtime = dtime
-        self.selection = np.array(selection) if selection is not None else None
-        self.bathymetry_grid_path = bathymetry_grid_path
-
-        self._check_spatial_input()
-        self._check_time_input()
-
-        # Create grid
-        self.time_array = self._create_time_array()
-        self.grid = self._create_grid(lat_variable, lon_variable, depth_variable)
-
-    def _check_time_input(self) -> None:
-        """Consistency checks for time input."""
-        # Not None
-        for name, val in [("time_min", self.time_min), ("time_max", self.time_max),
-                          ("dtime", self.dtime)]:
-            if val is None:
-                raise ValueError(f"Grid parameter {name!r} must not be None")
-
-        # Time step >=1
-        if self.dtime < 1:
-            raise ValueError("dtime must be >= 1")
-
-        # Valid modes
-        if self.mode not in self._VALID_MODES:
-            raise ValueError(f"mode must be one of {self._VALID_MODES}")
-
-        # Type of selection object
-        if self.selection is not None and not isinstance(self.selection, (np.ndarray, list)):
-            raise ValueError("selection must be a list or numpy array")
-
-    @staticmethod
-    def _iter_range(start, end, step):
-        """Yield datetimes from start to end (exclusive) by relativedelta step."""
-        from dateutil.parser import parse as _parse_dt
-        current = _parse_dt(start) if isinstance(start, str) else start
-        end_dt = _parse_dt(end) if isinstance(end, str) else end
-        while current < end_dt:
-            yield current
-            current += step
-
-    def _create_time_array(self) -> np.ndarray:
-        """Create the time array containing the time steps for the grid."""
-        time_array = []
-
-        # Determine all valid dates for the desired time range
-        if self.mode == "Y":
-            time_array = [v.strftime("%Y-%m-%d %H:%M:%S")
-                          for v in self._iter_range(self.time_min, self.time_max,
-                                                    relativedelta(years=+self.dtime))]
-        elif self.mode == "YM":
-            time_array = [v.strftime("%Y-%m-%d %H:%M:%S")
-                          for v in self._iter_range(self.time_min, self.time_max,
-                                                    relativedelta(months=+self.dtime))]
-        elif self.mode == "YD":
-            time_array = [v.strftime("%Y-%m-%d %H:%M:%S")
-                          for v in self._iter_range(self.time_min, self.time_max,
-                                                    relativedelta(days=+int(self.dtime)))]
-        elif self.mode == "M":
-            time_array = np.char.zfill(np.arange(1, 13, self.dtime).astype(str), 2)
-        elif self.mode == "MD":
-            time_array = [v.strftime("%m-%d %H:%M:%S")
-                          for v in self._iter_range("2000-01-01", "2001-01-01", relativedelta(days=+int(self.dtime)))]
-        elif self.mode == "D":
-            time_array = np.char.zfill(np.arange(1, 32, self.dtime).astype(str), 2)
-
-        # Perform selection
-        time_array = np.array(time_array)
-        if self.selection is not None:
-            if time_array.shape != self.selection.shape:
-                raise ValueError("selection shape must match time_array shape")
-            time_array = time_array[self.selection.astype(bool)]
-
-        return time_array
-
-    def _create_grid(self, lat_variable: str, lon_variable: str,
-                      depth_variable: str) -> pd.DataFrame:
-        """Creating a grid based on:
-        https://github.com/willirath/geomar-open-hacky-hour-2021-04/blob/main/2022-06-23/etopo05_to_grid.ipynb
-        grid must be nc file, format: latitude, longitude, depth
-        """
-        import xarray as xr
-
-        # Load bathymetry
-        ds = self._open_bathymetry(self.bathymetry_grid_path, lat_variable, lon_variable, depth_variable)
-
-        # Define cell-centered lat/lon values
-        lat = xr.DataArray(np.arange(self.lat_min + self.dlat / 2, self.lat_max, self.dlat),
-                           dims="LATITUDE")
-        lon = xr.DataArray(np.arange(self.lon_min + self.dlon / 2, self.lon_max, self.dlon),
-                           dims="LONGITUDE")
-
-        # Add water mask and time dimension
-        water_filled = self._water_mask(ds, lat, lon)
-        water_filled = water_filled.expand_dims(DATEANDTIME=self.time_array)
-
-        # Convert to df
-        df = water_filled.to_dataframe().reset_index()
-
-        return df.astype({"DATEANDTIME": str, "LEV_M": float,
-                          "LATITUDE": float, "LONGITUDE": float, "water": bool})
-
-    def _map_time(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Bin the DATEANDTIME column, according to self.mode."""
-        if self.mode in ("Y", "YM", "YD"):
-            time_bins = pd.DatetimeIndex(self.time_array)
-            time_bins = time_bins.union([pd.Timestamp(self.time_max) + pd.Timedelta(nanoseconds=1)])
-            df["DATEANDTIME"] = pd.cut(
-                pd.to_datetime(df["DATEANDTIME"]),
-                bins=time_bins, labels=time_bins[:-1], right=False,
-            )
-            df["DATEANDTIME"] = (df["DATEANDTIME"].astype("datetime64[ns]")
-                                 .dt.strftime("%Y-%m-%d %H:%M:%S"))
-        elif self.mode == "M":
-            # Snap the month to the first month of its bin
-            dates = df["DATEANDTIME"].astype("datetime64[ns]")
-            bin_index = (dates.dt.month - 1) // self.dtime
-            node = bin_index * self.dtime + 1  # get the grid node, i.e. the month
-            df["DATEANDTIME"] = node.astype("Int64").astype(str).str.zfill(2)
-        elif self.mode == "MD":
-            # Snap the day-month bin
-            dates = df["DATEANDTIME"].astype("datetime64[ns]")
-            # Days index of the year (1 Jan = 0)
-            day_index = dates.dt.dayofyear - 1
-            # Check if the day is from a non-leap year after February
-            after_feb_non_leap = (~dates.dt.is_leap_year) & (dates.dt.month > 2)
-            # Add one day for non-leap years after February (to align with leap reference year)
-            day_index = day_index + after_feb_non_leap.astype(int)
-            # Start of the dtime-day bin the day falls into
-            bin_index = day_index // self.dtime
-            node_day = bin_index * self.dtime
-            # Turn the day number back into a date in 2000 (midnight, so the time of day is dropped)
-            node = pd.Timestamp("2000-01-01") + pd.to_timedelta(node_day, unit="D")
-            df["DATEANDTIME"] = node.dt.strftime("%m-%d %H:%M:%S")
-        elif self.mode == "D":
-            # Snap the day to the first day of its bin
-            dates = df["DATEANDTIME"].astype("datetime64[ns]")
-            bin_idx = (dates.dt.day - 1) // self.dtime
-            node = bin_idx * self.dtime + 1
-            df["DATEANDTIME"] = node.astype("Int64").astype(str).str.zfill(2)
-
-        return df
-
-    def bin_time(self, df: pd.DataFrame, value_col: str, agg="mean") -> pd.DataFrame:
-        """Bin DATEANDTIME in *df* onto this grid's time steps and aggregate *value_col*.
-
-        Only bins the time axis. LATITUDE/LONGITUDE/LEV_M must already be
-        snapped to grid cell centres (e.g. by calling ``bin_space`` first).
-        Rows are then grouped by cell + time bin together.
-
-        Args:
-            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M,
-                DATEANDTIME and *value_col*.
-            value_col (str): Column to aggregate.
-            agg: Aggregation passed to ``DataFrame.agg``.
-        Returns:
-            pandas.DataFrame: One row per occupied cell and time step.
-        """
-        # Grid DATEANDTIME
-        df = self._map_time(df.copy())
-
-        # Group rows in the same cell and time bin and aggregate value_col
-        grouped = df.groupby(
-            ["LATITUDE", "LONGITUDE", "LEV_M", "DATEANDTIME"], as_index=False,
-        ).agg({value_col: agg})
-        grouped = self._flatten_bin_agg(grouped, value_col, agg)
-        grouped[value_col] = grouped[value_col].astype(float)
-        grouped["DATEANDTIME"] = grouped["DATEANDTIME"].astype(str)
-        return grouped
-
-    def bin(self, df: pd.DataFrame, value_col: str, agg: str | list[str] ="mean") -> pd.DataFrame:
-        """Bin *df* onto this grid's spatial cells and time steps, aggregating
-        *value_col* per cell. Usable for data already in memory (e.g. after ``load_comfort``),
-        not in the database.
-
-        Args:
-            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M,
-                DATEANDTIME and *value_col*.
-            value_col (str): Column to aggregate.
-            agg: Aggregation passed to ``DataFrame.agg``. A string ("mean"),
-                a list of strings/callables, or a callable. The special
-                value ``"seasonal_mean"`` runs monthly-first annual
-                averaging before binning onto this grid's time steps
-                (common for yearly gridding).
-        Returns:
-            pandas.DataFrame: One row per occupied cell and time step.
-        """
-        if agg == "seasonal_mean":
-            return self._bin_seasonal_mean(df, value_col)
-        return self.bin_time(self.bin_space(df), value_col, agg)
-
-    def _bin_seasonal_mean(self, df: pd.DataFrame, value_col: str) -> pd.DataFrame:
-        """Average value_col per grid cell per year, monthly-first, then bin onto this grid's time steps.
-
-        Implements ``agg="seasonal_mean"`` on ``bin``. A plain annual mean lets
-        months with more observations dominate; averaging month-by-month first,
-        then averaging those (at most 12) monthly means, corrects for that. See
-        ``seasonal_mean`` for the monthly-first averaging itself.
-        """
-        # Grid space, then compute the monthly-first annual mean per cell
-        annual = seasonal_mean(
-            self.bin_space(df), value_col=value_col,
-            group_cols=["LATITUDE", "LONGITUDE", "LEV_M"],
-        )
-
-        # Convert YEAR returned by seasonal_mean into a time stamp
-        annual["DATEANDTIME"] = annual["YEAR"].astype(int).astype(str) + "-01-01 00:00:00"
-        annual = annual.drop(columns=["YEAR"])
-        return self.bin_time(annual, value_col, agg="mean")
-
-    def map_tables(self, connection: sqlite3.Connection, param_tables: list[str] | None = None,
-                   replace_existing: bool = False, include_z_max: bool = True) -> list[str]:
-        """Bin each parameter table into this grid and write the result to the database.
-
-        Args:
-            connection (sqlite3.Connection): Connection to the database.
-            param_tables (list[str]): Parameter names to map, e.g. "NITRATE" or
-                "P_NITRATE" (both accepted). None maps all parameter tables.
-                LATITUDE/LONGITUDE/DATEANDTIME are joined from station.
-            replace_existing (bool): Replace already-mapped tables without prompting. Default is False.
-            include_z_max (bool): Include the maximum depth value. Default is True.
-        Returns:
-            list[str]: Names of the mapped tables in the database.
-        """
-        logging.info("Mapping tables to grid...")
-        connection.create_aggregate("median", 1, sqlite_utils.Median)
-        connection.create_aggregate("std", 1, sqlite_utils.Std)
-
-        # Determine parameter table names
-        if not param_tables:
-            param_tables = get_names_of_all_parameter_tables(connection)
-
-        mapped_tables = []
-        for table in param_tables:
-            # Normalise to the P_* table name and validate it
-            table = _param_table_name(table)
-            validate_identifier(table)
-
-            # Check if table already exists
-            existing = does_table_exist(connection, f"{table}_{self.grid_id}", "table")
-
-            # Check if table should be replaced
-            if existing and not replace_existing:
-                # Append existing table name
-                logging.info(f"Skipping already-mapped table {table}_{self.grid_id}")
-                mapped_tables.append(f"{table}_{self.grid_id}")
-                continue
-            elif existing:
-                connection.execute(f"DROP TABLE {table}_{self.grid_id};")
-
-            # Build SQL query to get table data, joining LATITUDE/LONGITUDE/DATEANDTIME from STATION
-            z_eq = "<=" if include_z_max else "<"
-            q = (f"SELECT s.LATITUDE, s.LONGITUDE, p.LEV_M, p.VAL, "
-                 f"strftime('%Y-%m-%d %H:%M:%S', s.DATEANDTIME) AS DATEANDTIME "
-                 f"FROM {table} p LEFT JOIN station s ON p.ID = s.ID WHERE "
-                 f"s.LATITUDE >= ? AND s.LATITUDE <= ? AND "
-                 f"s.LONGITUDE >= ? AND s.LONGITUDE <= ? AND "
-                 f"p.LEV_M >= ? AND p.LEV_M {z_eq} ? AND "
-                 f"s.DATEANDTIME >= ? AND s.DATEANDTIME <= ?")
-            # Convert to native Python types
-            bind = [float(self.lat_min), float(self.lat_max),
-                    float(self.lon_min), float(self.lon_max),
-                    float(self.z_min), float(self.z_max),
-                    str(self.time_min), str(self.time_max)]
-            logging.debug(q)
-
-            # Fetch data as df
-            cur = connection.execute(q, bind)
-            df = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
-            logging.info(f"  {table}: fetched {len(df)} rows")
-
-            # Bin onto grid cells and time steps, aggregating (mean, median, std, count)
-            df_grouped = self.bin(df, "VAL", agg=["mean", "median", "std", "count"])
-            logging.info(f"  {table}: binned to {len(df_grouped)} occupied cells")
-
-            grid_name = f"grid_{self.grid_id}"
-            # Add grid to database (if not yet included)
-            if not does_table_exist(connection, grid_name, "table"):
-                self.grid.to_sql(grid_name, connection, if_exists="replace",
-                                 index=True, index_label="idx")
-                logging.warning(
-                    "Grid was added to the database without a GridManager - "
-                    "it will not appear in grid_info."
-                )
-
-            # Write mapped table to database
-            df_grouped.to_sql(f"temp_{table}_{self.grid_id}", connection,
-                              if_exists="replace", index=False)
-
-            # Add grid index to the table
-            connection.execute(
-                f"CREATE TABLE {table}_{self.grid_id} AS "
-                f"SELECT g.idx, "
-                f"t.LATITUDE, t.LONGITUDE, t.LEV_M, t.DATEANDTIME, "
-                f"t.VAL AS {table}, t.median, t.std, t.count "
-                f"FROM temp_{table}_{self.grid_id} AS t "
-                f"LEFT JOIN grid_{self.grid_id} AS g "
-                f"USING(LATITUDE, LONGITUDE, LEV_M, DATEANDTIME);"
-            )
-
-            # Drop temporary mapped table
-            connection.execute(f"DROP TABLE temp_{table}_{self.grid_id};")
-            mapped_tables.append(f"{table}_{self.grid_id}")
-
-        return mapped_tables
-
-
-class SpaceGrid(_BaseGrid):
-    """A geospatial grid (no time dimension).
-    Individual observations are mapped but not time-averaged.
-    """
-
-    def __init__(self, lat_min, lat_max, dlat, lon_min, lon_max, dlon,
-                 bathymetry_grid_path,
-                 z_min=None, z_max=None, dz=None, z_array=None,
-                 lat_variable="lat", lon_variable="lon", depth_variable="elevation",
-                 grid_id=None):
-        """
-        Args:
-            lat_min, lat_max, dlat: Latitude range and step [°].
-            lon_min, lon_max, dlon: Longitude range and step [°].
-            bathymetry_grid_path (str): Path to a bathymetry NetCDF file. Required.
-            z_min, z_max, dz: Depth range and step [m].
-            z_array (array-like): Explicit depth nodes [m].
-            lat_variable, lon_variable, depth_variable: Variable names in the NetCDF file.
-            grid_id: Existing ID to use instead of generating a new one.
-        """
-        # Grid specs
-        self.grid_id = grid_id if grid_id else generate_grid_id()
-        self.grid_name = f"grid_{self.grid_id}"
-
-        # Init grid params
-        self.lat_min = lat_min
-        self.lat_max = lat_max
-        self.dlat = dlat
-        self.lon_min = lon_min
-        self.lon_max = lon_max
-        self.dlon = dlon
-        self.z_array = np.sort(np.array(z_array)) if z_array is not None else None
-        self.z_min = z_min if z_array is None else self.z_array.min()
-        self.z_max = z_max if z_array is None else self.z_array.max()
-        self.dz = dz
-        self.bathymetry_grid_path = bathymetry_grid_path
-
-        # Check input
-        self._check_spatial_input()
-
-        # Create grid
-        self.grid = self._create_grid(lat_variable, lon_variable, depth_variable)
-
-    def _create_grid(self, lat_variable: str, lon_variable: str,
-                      depth_variable: str) -> pd.DataFrame:
-        """Creating a grid based on:
-        https://github.com/willirath/geomar-open-hacky-hour-2021-04/blob/main/2022-06-23/etopo05_to_grid.ipynb
-        grid must be nc file, format: latitude, longitude, depth.
-        """
-        import xarray as xr
-
-        # Load bathymetry
-        ds = self._open_bathymetry(self.bathymetry_grid_path, lat_variable, lon_variable, depth_variable)
-
-        # Define cell-centered lat/lon values
-        lat = xr.DataArray(np.arange(self.lat_min + self.dlat / 2, self.lat_max, self.dlat),
-                           dims="LATITUDE")
-        lon = xr.DataArray(np.arange(self.lon_min + self.dlon / 2, self.lon_max, self.dlon),
-                           dims="LONGITUDE")
-
-        # Add water mask and time dimension
-        water_filled = self._water_mask(ds, lat, lon)
-
-        # Convert to df
-        df = water_filled.to_dataframe().reset_index()
-        return df.astype({"LEV_M": float, "LATITUDE": float, "LONGITUDE": float, "water": bool})
-
-    def bin(self, df: pd.DataFrame, value_col: str, agg="mean") -> pd.DataFrame:
-        """Bin *df* onto this grid (for data already in memory by e.g.
-        ``load_comfort``, rather than in database).
-
-        Args:
-            df (pandas.DataFrame): Must contain LATITUDE, LONGITUDE, LEV_M
-                and *value_col*.
-            value_col (str): Column to aggregate.
-            agg: Aggregation passed to ``DataFrame.agg``. A string ("mean"),
-                a list of strings/callables or a callable.
-        Returns:
-            pandas.DataFrame: One row per occupied grid cell.
-        """
-        return self.bin_space(df, value_col, agg)
-
-    def map_tables(self, connection: sqlite3.Connection, param_tables: list[str] | None = None,
-                   include_z_max: bool = True, output_dir: str | None = None) -> None:
-        """Bin each parameter table into this spatial grid and write CSV output.
-
-        Args:
-            connection (sqlite3.Connection): Connection to the database.
-            param_tables (list[str]): Tables to map. None maps all parameter tables.
-            include_z_max (bool): Include the maximum depth value. Default is True.
-            output_dir (str): Directory to write CSV files. None uses the current
-                working directory.
-        """
-        logging.info("Mapping tables to SpaceGrid...")
-
-        # Determine parameter table names
-        if not param_tables:
-            param_tables = get_names_of_all_parameter_tables(connection)
-
-        # Create output_dir if not existant yet
-        if output_dir is not None:
-            os.makedirs(output_dir, exist_ok=True)
-
-        for table in param_tables:
-            # Validate table name
-            validate_identifier(table)
-
-            # Build SQL query to retrieve table data
-            z_eq = "<=" if include_z_max else "<"
-            q = (f"SELECT LATITUDE, LONGITUDE, LEV_M, VAL, "
-                 f"strftime('%Y-%m-%d %H:%M:%S', DATEANDTIME) AS DATEANDTIME "
-                 f"FROM {table} WHERE "
-                 f"LATITUDE >= ? AND LATITUDE <= ? AND "
-                 f"LONGITUDE >= ? AND LONGITUDE <= ? AND "
-                 f"LEV_M >= ? AND LEV_M {z_eq} ?")
-            bind = [self.lat_min, self.lat_max, self.lon_min, self.lon_max,
-                    self.z_min, self.z_max]
-            logging.debug(q)
-
-            # Fetch data as df
-            cur = connection.execute(q, bind)
-            df = pd.DataFrame(cur.fetchall(), columns=np.array([x[0] for x in cur.description]))
-
-            # Map lat/lon/depth
-            df = self._map_lat_lon_depth(df)
-
-            # Check data types
-            df = df.astype(
-                {"DATEANDTIME": str, "LEV_M": float, "LATITUDE": float,
-                 "LONGITUDE": float, "VAL": float}
-            )
-
-            # Join grid and parameter table and store table
-            joined = df.merge(self.grid, on=["LATITUDE", "LONGITUDE", "LEV_M"], how="outer")
-            joined.rename(columns={"VAL": table}, inplace=True)
-            csv_name = f"{table}_grid.csv"
-            if output_dir is not None:
-                csv_name = os.path.join(output_dir, csv_name)
-            joined.to_csv(csv_name)
 
 
 def average_duplicate_locations(
