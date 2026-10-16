@@ -47,6 +47,15 @@ def generate_grid_id() -> int:
         return _last_id
 
 
+def _is_multiple(span: float, step: float) -> bool:
+    """Return True if *span* is a whole number of *step*s, within floating-point tolerance.
+
+    A plain ``span % step == 0`` fails for floats, e.g. ``1 % 0.1`` is ``0.0999...``.
+    """
+    n = span / step
+    return abs(n - round(n)) < 1e-9
+
+
 class _BaseGrid:
     """Shared grid logic for Grid and SpaceGrid."""
 
@@ -99,17 +108,31 @@ class _BaseGrid:
         if not (0 <= self.z_min <= 12000) or not (0 <= self.z_max <= 12000):
             raise ValueError("z_min and z_max must be in [0, 12000]")
 
+        # The ranges must be non-empty (np.arange would silently return an empty grid otherwise)
+        if not self.lat_min < self.lat_max:
+            raise ValueError("lat_min must be smaller than lat_max")
+        if not self.lon_min < self.lon_max:
+            raise ValueError("lon_min must be smaller than lon_max")
+        if not self.z_min < self.z_max:
+            raise ValueError("z_min must be smaller than z_max")
+
+        # Steps must be positive
+        if self.dlat <= 0 or self.dlon <= 0:
+            raise ValueError("dlat and dlon must be > 0")
+
         # Check depth (specified as z_array)
         if self.z_array is None:
             if self.dz is None:
                 raise ValueError("dz must be provided when z_array is None")
+            if self.dz <= 0:
+                raise ValueError("dz must be > 0")
 
             # For a regular grid, we need complete grid cells
-            if (abs(self.lat_min) + abs(self.lat_max)) % self.dlat != 0:
+            if not _is_multiple(self.lat_max - self.lat_min, self.dlat):
                 raise ValueError("Latitude range must be evenly divisible by dlat")
-            if (abs(self.lon_min) + abs(self.lon_max)) % self.dlon != 0:
+            if not _is_multiple(self.lon_max - self.lon_min, self.dlon):
                 raise ValueError("Longitude range must be evenly divisible by dlon")
-            if (abs(self.z_min) + abs(self.z_max)) % self.dz != 0:
+            if not _is_multiple(self.z_max - self.z_min, self.dz):
                 raise ValueError("Depth range must be evenly divisible by dz")
         else:
             if self.dz is not None:

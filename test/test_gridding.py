@@ -324,6 +324,45 @@ class TestGridValidation:
         with pytest.raises(ValueError):
             Grid(**{**self._COMMON_PARAMS, "dz": None, "bathymetry_grid_path": "/nonexistent/path.nc"})
 
+    # A range that divides evenly is accepted (the grid then fails on missing bathymetry file)
+    def test_positive_bounds_evenly_divisible_accepted(self):
+        with pytest.raises(FileNotFoundError):
+            Grid(**{**self._COMMON_PARAMS, "lat_min": 2, "lat_max": 12, "dlat": 5})
+
+    # A range that does not divide evenly is rejected
+    def test_positive_bounds_not_divisible_raises(self):
+        with pytest.raises(ValueError, match="Latitude range"):
+            Grid(**{**self._COMMON_PARAMS, "lat_min": 2, "lat_max": 8, "dlat": 5})
+
+    # Longitude and depth ranges are checked the same way
+    def test_lon_and_depth_not_divisible_raise(self):
+        with pytest.raises(ValueError, match="Longitude range"):
+            Grid(**{**self._COMMON_PARAMS, "lon_min": 2, "lon_max": 8, "dlon": 5})
+        with pytest.raises(ValueError, match="Depth range"):
+            Grid(**{**self._COMMON_PARAMS, "z_min": 20, "z_max": 80, "dz": 50})
+
+    # Float steps are compared with a tolerance (1 % 0.1 is not 0 in floating point)
+    def test_float_step_accepted(self):
+        with pytest.raises(FileNotFoundError):
+            Grid(**{**self._COMMON_PARAMS, "lat_min": 0, "lat_max": 1, "dlat": 0.1})
+
+    # min must be smaller than max for latitude, longitude and depth
+    @pytest.mark.parametrize("params", [
+        dict(lat_min=30, lat_max=10),
+        dict(lat_min=10, lat_max=10),
+        dict(lon_min=50, lon_max=-50),
+        dict(z_min=500, z_max=100),
+    ])
+    def test_min_not_smaller_than_max_raises(self, params):
+        with pytest.raises(ValueError, match="smaller than"):
+            Grid(**{**self._COMMON_PARAMS, **params})
+
+    # Steps must be positive
+    @pytest.mark.parametrize("params", [dict(dlat=0), dict(dlon=-1), dict(dz=0), dict(dz=-100)])
+    def test_non_positive_step_raises(self, params):
+        with pytest.raises(ValueError, match="must be > 0"):
+            Grid(**{**self._COMMON_PARAMS, **params})
+
 
 def _full_grid_df(with_time=False, time_array=("2000-01-01 00:00:00",)):
     """Full (lat, lon, depth[, time]) template matching the stub grids below."""
