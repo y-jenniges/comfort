@@ -90,6 +90,39 @@ class TestDistanceToCoast:
         result = distance_to_coast(df, coastline_geom=geoms)
         assert 100.0 < float(result.iloc[0]) < 125.0
 
+    # Nearest vertex is also found at high latitude
+    def test_nearest_vertex_at_high_latitude (self):
+        from shapely.geometry import MultiPoint
+        df = pd.DataFrame({"LATITUDE": [80.0], "LONGITUDE": [0.0]})  # observation at 80°N, 0°E
+        # Coast vertex A is 10° east on the same parallel (~192 km away), nearer than vertex B, 2° north (~222 km away)
+        coast = MultiPoint([(10.0, 80.0), (0.0, 82.0)])  # coast close to North Pole
+        result = distance_to_coast(df, coastline_geom=coast)
+        assert 185.0 < float(result.iloc[0]) < 200.0
+
+    # Neighbours across the +-180 meridian have similar distance to coast
+    def test_across_antimeridian(self):
+        from shapely.geometry import LineString
+        coast = LineString([(-179.0, lat) for lat in range(-10, 11)])
+        df = pd.DataFrame({"LATITUDE": [0.0], "LONGITUDE": [179.0]})
+        result = distance_to_coast(df, coastline_geom=coast)
+        assert 215.0 < float(result.iloc[0]) < 230.0
+
+    # Invalid coordinates give NaN, valid rows are unaffected
+    def test_invalid_coordinates_give_nan(self, caplog):
+        df = pd.DataFrame({"LATITUDE": [0.0, np.nan, 95.0, 0.0, 0.0],
+                           "LONGITUDE": [1.0, 1.0, 1.0, np.nan, 200.0]})
+        with caplog.at_level("WARNING"):
+            result = distance_to_coast(df, coastline_geom=self._vertical_coastline())
+        assert np.isfinite(result.iloc[0])
+        assert result.iloc[1:].isna().all()
+        assert "4 of 5" in caplog.text
+
+    # Empty input df returns empty result (no error)
+    def test_empty_dataframe(self):
+        df = pd.DataFrame({"LATITUDE": [], "LONGITUDE": []})
+        result = distance_to_coast(df, coastline_geom=self._vertical_coastline())
+        assert len(result) == 0
+
     # Distances are never negative
     def test_non_negative(self):
         df = pd.DataFrame({"LATITUDE": [0.0, 5.0, -5.0], "LONGITUDE": [3.0, 1.0, 7.0]})

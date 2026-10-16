@@ -22,17 +22,18 @@ def distance_to_coast(df: pd.DataFrame, lat_col: str = "LATITUDE",
     """Approximates the distance of each observation to the nearest coastline.
 
     Uses Natural Earth coastlines (cached via cartopy) unless a custom
-    geometry is provided. Coastline vertices are indexed with a KDTree
-    for fast approximate nearest-neighbour search, followed by exact
-    haversine distance for the top-5 candidates. Fully vectorised -
-    suitable for large DataFrames.
+    geometry is provided. Nearest-neighbour search runs on a unit-sphere
+    KDTree (works at any latitude and across ±180°). The distance
+    is to the nearest coastline vertex, not segment. Use a finer
+    *resolution* to reduce the overestimate. Rows with missing or
+    out-of-range coordinates get NaN.
 
     Args:
         df (pandas.DataFrame): DataFrame with latitude and longitude columns.
         lat_col (str): Latitude column [°N].
         lon_col (str): Longitude column [°E].
-        resolution (str): Natural Earth resolution (``'110m'``, ``'50m'``
-            or ``'10m'``). Ignored when ``coastline_geom`` is provided.
+        resolution (str): Natural Earth resolution (``'110m'``, ``'50m'`` or ``'10m'``).
+            Ignored when ``coastline_geom`` is provided.
         coastline_geom: Pre-loaded coastline as a shapely geometry, list
             of geometries or geopandas GeoSeries/GeoDataFrame.
     Returns:
@@ -46,34 +47,36 @@ def distance_to_coast(df: pd.DataFrame, lat_col: str = "LATITUDE",
         logging.error("distance_to_coast: no coastline points could be loaded")
         return pd.Series(np.nan, index=df.index)
 
-    # Convert to radians for haversine
-    coast_lon_r = np.radians(coast_pts[:, 0])
-    coast_lat_r = np.radians(coast_pts[:, 1])
+    # Get observes lat/lon
+    obs_lat = df[lat_col].values.astype(float)
+    obs_lon = df[lon_col].values.astype(float)
 
-    obs_lon_r = np.radians(df[lon_col].values.astype(float))
-    obs_lat_r = np.radians(df[lat_col].values.astype(float))
+    # Rows with unusable coordinates stay NaN
+    valid = (np.isfinite(obs_lat) & np.isfinite(obs_lon) & (np.abs(obs_lat) <= 90) & (np.abs(obs_lon) <= 180))
+    if not valid.all():
+        # Log count of invalid coordinates
+        logging.warning("distance_to_coast: %d of %d rows have missing or invalid "
+                        "coordinates and get NaN", int((~valid).sum()), len(valid))
 
-    # Build KDTree for fast approximate nearest-neighbour lookup
-    tree = cKDTree(np.column_stack([coast_lon_r, coast_lat_r]))
-    k = min(5, len(coast_pts))
-    _, idxs = tree.query(np.column_stack([obs_lon_r, obs_lat_r]), k=k)
+    result = np.full(len(df), np.nan)
+    if valid.any():
+        # Build the k-d tree on unit sphere coordinates
+        tree = cKDTree(_to_unit_sphere(coast_pts[:, 1], coast_pts[:, 0]))
+        euclidean_dist, _ = tree.query(_to_unit_sphere(obs_lat[valid], obs_lon[valid]), k=1)
 
-    if idxs.ndim == 1:
-        idxs = idxs[:, np.newaxis]
+        # Euclidean length on the unit sphere back to arc length (clip to prevent float overshoot)
+        result[valid] = 2 * _EARTH_RADIUS_KM * np.arcsin(np.clip(euclidean_dist / 2, 0.0, 1.0))
 
-    # Exact haversine for top-k candidates
-    cand_lat = coast_lat_r[idxs]
-    cand_lon = coast_lon_r[idxs]
-    obs_lat_2d = obs_lat_r[:, np.newaxis]
-    obs_lon_2d = obs_lon_r[:, np.newaxis]
+    return pd.Series(result, index=df.index)
 
-    dlat = cand_lat - obs_lat_2d
-    dlon = cand_lon - obs_lon_2d
-    a = (np.sin(dlat / 2) ** 2
-         + np.cos(obs_lat_2d) * np.cos(cand_lat) * np.sin(dlon / 2) ** 2)
-    dist_km = 2 * _EARTH_RADIUS_KM * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
-    return pd.Series(dist_km.min(axis=1), index=df.index)
+def _to_unit_sphere(lat_deg, lon_deg) -> np.ndarray:
+    """Return an (N, 3) array of unit-sphere xyz coordinates."""
+    lat_r = np.radians(lat_deg)
+    lon_r = np.radians(lon_deg)
+    return np.column_stack([np.cos(lat_r) * np.cos(lon_r),
+                            np.cos(lat_r) * np.sin(lon_r),
+                            np.sin(lat_r)])
 
 
 def along_track_distance(df: pd.DataFrame, lat_col: str = "LATITUDE",
