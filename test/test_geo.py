@@ -281,6 +281,69 @@ class TestWaterMassMasks:
         result = water_mass_masks(df, self._box_regions())
         assert list(result.index) == [10, 20, 30]
 
+    @staticmethod
+    def _adjacent_boxes():
+        """Two boxes sharing the edge lon=10."""
+        return {
+            "a": [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)],
+            "b": [(10.0, 0.0), (20.0, 0.0), (20.0, 10.0), (10.0, 10.0)],
+        }
+
+    # Points on a region edge are assigned, not dropped
+    def test_boundary_point_is_assigned(self):
+        df = pd.DataFrame({"LATITUDE": [0.0, 5.0], "LONGITUDE": [5.0, 0.0]})
+        result = water_mass_masks(df, self._adjacent_boxes())
+        assert list(result["region"]) == ["a", "a"]
+
+    # A point on a shared edge goes to the first region, in either order
+    def test_shared_boundary_first_region_wins(self):
+        df = pd.DataFrame({"LATITUDE": [5.0], "LONGITUDE": [10.0]})
+        boxes = self._adjacent_boxes()
+        assert water_mass_masks(df, boxes)["region"].iloc[0] == "a"
+        reversed_boxes = {k: boxes[k] for k in ("b", "a")}
+        assert water_mass_masks(df, reversed_boxes)["region"].iloc[0] == "b"
+
+    # Dict regions outside lon/lat range are rejected
+    def test_dict_outside_lonlat_raises(self):
+        regions = {"far": [(0.0, 0.0), (1e6, 0.0), (1e6, 1e6), (0.0, 1e6)]}
+        with pytest.raises(ValueError, match="lon/lat"):
+            water_mass_masks(_obs_df(), regions)
+
+    @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+    # A projected GeoDataFrame is reprojected, not relabelled as lon/lat
+    def test_projected_geodataframe_is_reprojected(self):
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+        gdf = gpd.GeoDataFrame(
+            {"name": ["box"], "geometry": [Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])]},
+            crs="EPSG:4326",
+        ).to_crs("EPSG:3857")
+        df = pd.DataFrame({"LATITUDE": [5.0, 50.0], "LONGITUDE": [5.0, 50.0]})
+        result = water_mass_masks(df, gdf)
+        assert result["region"].iloc[0] == "box"
+        assert pd.isna(result["region"].iloc[1])
+
+    @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+    # Without a CRS lon/lat is assumed, with a warning
+    def test_geodataframe_without_crs_assumes_lonlat(self, caplog):
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+        gdf = gpd.GeoDataFrame({"name": ["box"], "geometry": [Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])]})
+        df = pd.DataFrame({"LATITUDE": [5.0], "LONGITUDE": [5.0]})
+        with caplog.at_level("WARNING"):
+            result = water_mass_masks(df, gdf)
+        assert result["region"].iloc[0] == "box"
+        assert "no CRS" in caplog.text
+
+    @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+    # Without a CRS, invalid lat/lon coordinates raise instead of silently matching nothing
+    def test_geodataframe_without_crs_projected_raises(self):
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+        gdf = gpd.GeoDataFrame({"name": ["box"], "geometry": [Polygon([(0, 0), (1e6, 0), (1e6, 1e6), (0, 1e6)])]})
+        with pytest.raises(ValueError, match="set_crs"):
+            water_mass_masks(_obs_df(), gdf)
+
 
 class TestWaterMassStatistics:
     @staticmethod
@@ -350,6 +413,18 @@ class TestRegionBbox:
     def test_single_region_bbox(self):
         result = region_bbox({"north": self._regions["north"]})
         assert result == (40.0, 50.0, 0.0, 10.0)
+
+    # A projected GeoDataFrame yields a bbox in degrees
+    @pytest.mark.skipif(not _has_geopandas, reason="geopandas not installed ([geo] extra)")
+    def test_projected_geodataframe_gives_degrees(self):
+        import geopandas as gpd
+        from shapely.geometry import Polygon
+        gdf = gpd.GeoDataFrame(
+            {"name": ["box"], "geometry": [Polygon([(1, 2), (3, 2), (3, 4), (1, 4)])]},
+            crs="EPSG:4326",
+        ).to_crs("EPSG:3857")
+        result = region_bbox(gdf)
+        assert np.allclose(result, (2.0, 4.0, 1.0, 3.0))
 
     # Works with a shapely polygon wrapped in a dict
     def test_shapely_polygon_input(self):

@@ -320,8 +320,10 @@ def water_mass_masks(df: pd.DataFrame, regions: dict | str | Path | gpd.GeoDataF
                      output_col: str = "region") -> pd.DataFrame:
     """Assign each observation to a 2d geographic region.
 
-    For overlapping regions the first match wins (dict order /
-    GeoDataFrame row order). Observations outside every region get ``NaN``.
+    Points on a region boundary count as inside. For overlapping regions
+    (including a boundary shared by two regions) the first match wins
+    (dict order / GeoDataFrame row order). Observations outside every
+    region get ``NaN``.
 
     ``regions`` may be any of:
 
@@ -359,16 +361,18 @@ def water_mass_masks(df: pd.DataFrame, regions: dict | str | Path | gpd.GeoDataF
             crs="EPSG:4326",
         )
 
-        # Init regions geo df
+        # Init regions geo df (_parse_regions guarantees lon/lat degrees)
         regions_gdf = gpd.GeoDataFrame(
             {"_rname": [n for n, _ in named_regions],
+             "_pos": range(len(named_regions)),
              "geometry": [g for _, g in named_regions]},
             crs="EPSG:4326",
         )
 
-        # Join
-        joined = gpd.sjoin(obs_gdf, regions_gdf, how="left", predicate="within")
-        joined = joined[~joined.index.duplicated(keep="first")]
+        # Join (use "intersects" (not within) so points on a region boundary are assigned)
+        joined = gpd.sjoin(obs_gdf, regions_gdf, how="left", predicate="intersects")
+        joined = joined.sort_values("_pos", kind="stable")  # sort by region position
+        joined = joined[~joined.index.duplicated(keep="first")]  # for multiple matching regions, assign to the first
         region_series = joined["_rname"].reindex(range(len(df)))
 
         # Assemble final df
@@ -387,7 +391,7 @@ def water_mass_masks(df: pd.DataFrame, regions: dict | str | Path | gpd.GeoDataF
     for _, row in df.iterrows():
         # Containment test
         pt = Point(row[lon_col], row[lat_col])
-        match = next((name for name, poly in named_regions if poly.contains(pt)), None)
+        match = next((name for name, poly in named_regions if poly.intersects(pt)), None)
         labels.append(match)
 
     # Assemble final df
@@ -496,6 +500,40 @@ def _resolve_name_col(columns, region_name_col):
     return region_name_col
 
 
+def _check_lonlat(named_regions):
+    """Raise ValueError if any region coordinate is outside lon/lat range."""
+    for name, poly in named_regions:
+        # Skip empt polygons
+        if poly.is_empty:
+            continue
+
+        # Get lat/lon bounds
+        lon_min, lat_min, lon_max, lat_max = poly.bounds
+
+        # Check if bounds are valid
+        if lon_min < -180 or lon_max > 360 or lat_min < -90 or lat_max > 90:
+            raise ValueError(
+                f"Region {name!r} has coordinates outside lon/lat range (bounds "
+                f"{poly.bounds}); regions must be in degrees. For a GeoDataFrame with an "
+                "unknown CRS, set it first with gdf.set_crs(...)."
+            )
+    return named_regions
+
+
+def _to_lonlat(geo):
+    """Reproject a GeoDataFrame/GeoSeries to EPSG:4326. If no CRS is given, assume lon/lat."""
+    if geo.crs is None:
+        # No CRS given -> warn and use lon/lat
+        logging.warning("Regions have no CRS; assuming lon/lat degrees (EPSG:4326)")
+        _check_lonlat(list(zip(range(len(geo)), geo.geometry)))
+        return geo
+
+    if geo.crs != "EPSG:4326":
+        # Convert all CRS to lon/lat (EPSG:4326)
+        return geo.to_crs("EPSG:4326")
+    return geo
+
+
 def _parse_regions(regions, region_name_col):
     """Return a list of ``(name, shapely.Polygon)`` tuples from any input format."""
     from shapely.geometry import Polygon
@@ -506,7 +544,7 @@ def _parse_regions(regions, region_name_col):
         for name, geom in regions.items():
             poly = geom if hasattr(geom, "contains") else Polygon(geom)
             result.append((name, poly))
-        return result
+        return _check_lonlat(result)
 
     # Regions as CSV
     path = Path(regions) if isinstance(regions, (str, Path)) else None
@@ -514,10 +552,10 @@ def _parse_regions(regions, region_name_col):
         from shapely import wkt
         csv_df = pd.read_csv(path)
         name_col = _resolve_name_col(csv_df.columns, region_name_col)
-        return [
+        return _check_lonlat([
             (row[name_col], wkt.loads(row["geometry"]))
             for _, row in csv_df.iterrows()
-        ]
+        ])
 
     # Regions as shapefile
     if path is not None and path.suffix.lower() == ".shp":
@@ -528,7 +566,7 @@ def _parse_regions(regions, region_name_col):
                 "geopandas is required to read shapefiles; "
                 "install it with: pip install \"comfort-db[geo]\""
             )
-        gdf = gpd.read_file(path)
+        gdf = _to_lonlat(gpd.read_file(path))
         name_col = _resolve_name_col(gdf.columns, region_name_col)
         return [(row[name_col], row.geometry) for _, row in gdf.iterrows()]
 
@@ -536,10 +574,11 @@ def _parse_regions(regions, region_name_col):
     try:
         import geopandas as gpd
         if isinstance(regions, gpd.GeoSeries):
-            return list(regions.items())
+            return list(_to_lonlat(regions).items())
         if isinstance(regions, gpd.GeoDataFrame):
-            name_col = _resolve_name_col(regions.columns, region_name_col)
-            return [(row[name_col], row.geometry) for _, row in regions.iterrows()]
+            gdf = _to_lonlat(regions)
+            name_col = _resolve_name_col(gdf.columns, region_name_col)
+            return [(row[name_col], row.geometry) for _, row in gdf.iterrows()]
     except ImportError:
         pass
 
