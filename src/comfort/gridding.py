@@ -639,8 +639,7 @@ class Grid(_BaseGrid):
             time_array = np.char.zfill(np.arange(1, 13, self.dtime).astype(str), 2)
         elif self.mode == "MD":
             time_array = [v.strftime("%m-%d %H:%M:%S")
-                          for v in self._iter_range("2000-01-01", "2000-12-31",
-                                                    relativedelta(days=+int(self.dtime)))]
+                          for v in self._iter_range("2000-01-01", "2001-01-01", relativedelta(days=+int(self.dtime)))]
         elif self.mode == "D":
             time_array = np.char.zfill(np.arange(1, 32, self.dtime).astype(str), 2)
 
@@ -692,14 +691,32 @@ class Grid(_BaseGrid):
             df["DATEANDTIME"] = (df["DATEANDTIME"].astype("datetime64[ns]")
                                  .dt.strftime("%Y-%m-%d %H:%M:%S"))
         elif self.mode == "M":
-            # Get month from date column
-            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%m")
+            # Snap the month to the first month of its bin
+            dates = df["DATEANDTIME"].astype("datetime64[ns]")
+            bin_index = (dates.dt.month - 1) // self.dtime
+            node = bin_index * self.dtime + 1  # get the grid node, i.e. the month
+            df["DATEANDTIME"] = node.astype("Int64").astype(str).str.zfill(2)
         elif self.mode == "MD":
-            # Get month-day from date column
-            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%m-%d %H:%M:%S")
+            # Snap the day-month bin
+            dates = df["DATEANDTIME"].astype("datetime64[ns]")
+            # Days index of the year (1 Jan = 0)
+            day_index = dates.dt.dayofyear - 1
+            # Check if the day is from a non-leap year after February
+            after_feb_non_leap = (~dates.dt.is_leap_year) & (dates.dt.month > 2)
+            # Add one day for non-leap years after February (to align with leap reference year)
+            day_index = day_index + after_feb_non_leap.astype(int)
+            # Start of the dtime-day bin the day falls into
+            bin_index = day_index // self.dtime
+            node_day = bin_index * self.dtime
+            # Turn the day number back into a date in 2000 (midnight, so the time of day is dropped)
+            node = pd.Timestamp("2000-01-01") + pd.to_timedelta(node_day, unit="D")
+            df["DATEANDTIME"] = node.dt.strftime("%m-%d %H:%M:%S")
         elif self.mode == "D":
-            # Get day from date column
-            df["DATEANDTIME"] = df["DATEANDTIME"].astype("datetime64[ns]").dt.strftime("%d")
+            # Snap the day to the first day of its bin
+            dates = df["DATEANDTIME"].astype("datetime64[ns]")
+            bin_idx = (dates.dt.day - 1) // self.dtime
+            node = bin_idx * self.dtime + 1
+            df["DATEANDTIME"] = node.astype("Int64").astype(str).str.zfill(2)
 
         return df
 

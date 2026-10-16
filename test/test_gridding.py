@@ -885,3 +885,75 @@ class TestAddGrid:
             gm.add_grid(_make_manager_grid(13))
         assert gm.connection.execute("SELECT x FROM grid_13").fetchall() == [(1,)]
         assert not gm.does_grid_exist(13)
+
+
+def _make_time_grid_stub(mode, dtime):
+    """Build a dummy Grid with only the attributes the time array and _map_time need."""
+    grid = object.__new__(Grid)
+    for k, v in dict(mode=mode, dtime=dtime, selection=None,
+                     time_min="2000-01-01", time_max="2001-01-01").items():
+        setattr(grid, k, v)
+    grid.time_array = grid._create_time_array()
+    return grid
+
+
+def _snap(grid, dates):
+    """Return the time bin each date is mapped to by _map_time."""
+    df = pd.DataFrame({"DATEANDTIME": pd.to_datetime(dates)})
+    return grid._map_time(df)["DATEANDTIME"].tolist()
+
+
+class TestTimeModes:
+    # M: dtime-sized month bins, every snapped value is a node of the time array
+    def test_month_dtime_3(self):
+        grid = _make_time_grid_stub("M", 3)
+        assert grid.time_array.tolist() == ["01", "04", "07", "10"]
+        dates = ["2005-01-15", "2005-02-10", "2005-03-31", "2005-05-01", "2005-12-31"]
+        assert _snap(grid, dates) == ["01", "01", "01", "04", "10"]
+
+    # M with dtime=1 keeps the plain two-digit month
+    def test_month_dtime_1(self):
+        grid = _make_time_grid_stub("M", 1)
+        assert _snap(grid, ["2005-02-10", "2005-11-30"]) == ["02", "11"]
+
+    # D: dtime-sized day bins
+    def test_day_dtime_10(self):
+        grid = _make_time_grid_stub("D", 10)
+        assert grid.time_array.tolist() == ["01", "11", "21", "31"]
+        assert _snap(grid, ["2005-03-01", "2005-03-10", "2005-03-11", "2005-03-31"]) == ["01", "01", "11", "31"]
+
+    # MD nodes cover the whole leap reference year, including 29 Feb and 31 Dec
+    def test_month_day_nodes_cover_year(self):
+        grid = _make_time_grid_stub("MD", 1)
+        assert len(grid.time_array) == 366
+        assert "02-29 00:00:00" in grid.time_array
+        assert grid.time_array[-1] == "12-31 00:00:00"
+
+    # MD drops the time of day so that observations match a node
+    def test_month_day_drops_time_of_day(self):
+        grid = _make_time_grid_stub("MD", 1)
+        assert _snap(grid, ["2005-03-15 12:30:00", "2005-12-31 23:59:00"]) == ["03-15 00:00:00", "12-31 00:00:00"]
+
+    # MD aligns the days of non-leap and leap years to the same calendar date
+    def test_month_day_leap_alignment(self):
+        grid = _make_time_grid_stub("MD", 1)
+        assert _snap(grid, ["2005-03-01", "2004-03-01", "2005-12-31", "2004-12-31"]) == [
+            "03-01 00:00:00", "03-01 00:00:00", "12-31 00:00:00", "12-31 00:00:00"]
+
+    # MD with dtime>1 snaps to the start of the bin, which is a node
+    def test_month_day_dtime_30(self):
+        grid = _make_time_grid_stub("MD", 30)
+        nodes = set(grid.time_array.tolist())
+        snapped = _snap(grid, ["2005-01-15", "2005-03-15", "2005-12-31"])
+        assert snapped[0] == "01-01 00:00:00"
+        assert set(snapped) <= nodes
+
+    # Every date of the year maps onto a time array node
+    @pytest.mark.parametrize("mode,dtime", [("M", 1), ("M", 5),
+                                            ("D", 1), ("D", 7),
+                                            ("MD", 1), ("MD", 45)])
+    def test_every_date_maps_to_a_node(self, mode, dtime):
+        grid = _make_time_grid_stub(mode, dtime)
+        dates = pd.date_range("2004-01-01", "2005-12-31", freq="D")
+        # Equal sets: No date lands outside the nodes, and no node is left without a date
+        assert set(_snap(grid, dates)) == set(grid.time_array.tolist())
