@@ -90,7 +90,6 @@ The `classify_from_grid` function similarly performs a k-d tree search, but only
 retrieves a single nearest-neighbour, without a subsequent refinement step. 
 Both functions approximate great-circle distance with Euclidean distance in radians, which is imprecise near the poles and the 
 antimeridian (±180°).
-Moreover, gridding can be either applied offline, i.e. all data in memory, or online, i.e. directly in the database.
 
 Quality flag interpretation and unit conversions are centralised in dedicated modules (`comfort.qc`, `comfort.units`) so 
 that corrections and settings apply everywhere consistently. 
