@@ -17,6 +17,7 @@ from comfort.gridding import (
     Grid,
     GridManager,
     SpaceGrid,
+    generate_grid_id,
     average_duplicate_locations,
     create_wide_table_online,
     drop_land_cells,
@@ -766,3 +767,82 @@ class TestGridManagerWithBathymetry:
             assert not gm.does_grid_exist(grid.grid_id)
         finally:
             gm.close()
+
+
+class TestGenerateId:
+    # IDs generated at same second are distinct and increasing
+    def test_unique_and_increasing(self):
+        ids = [generate_grid_id() for _ in range(1000)]
+        assert len(set(ids)) == 1000
+        assert ids == sorted(ids)
+
+    # IDs are plain integers
+    def test_is_int(self):
+        assert isinstance(generate_grid_id(), int)
+
+    # Two wide tables for the same grid created in quick succession do not collide
+    def test_wide_table_names_unique(self):
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE grid_1 (idx INTEGER, DATEANDTIME, LEV_M, LATITUDE, LONGITUDE, water)")
+        conn.execute("CREATE TABLE P_X_1 (idx INTEGER, P_X)")
+        a = create_wide_table_online(conn, 1, ["X"])
+        b = create_wide_table_online(conn, 1, ["X"])
+        assert a != b
+        conn.close()
+
+
+def _make_manager_grid(grid_id):
+    """Build a dummy Grid adn insert it into a dummy grid_info table."""
+    # Dummy grid
+    grid = _make_grid_stub()
+
+    # Insert dummy grid into dummy grid_info tables
+    for k, v in dict(
+        grid_id=grid_id, grid_name=f"grid_{grid_id}", selection=None,
+        time_min="2000-01-01 00:00:00", dtime=1,
+    ).items():
+        setattr(grid, k, v)
+    return grid
+
+
+class TestAddGrid:
+    @pytest.fixture
+    def gm(self, tmp_path):
+        # Define a grid manager
+        manager = GridManager(str(tmp_path / "test.sqlite"))
+        yield manager
+        manager.close()
+
+    # Grid table and grid_info row are both written
+    def test_adds_table_and_row(self, gm):
+        grid = _make_manager_grid(11)
+        gm.add_grid(grid)
+        assert gm.does_grid_exist(11)
+        assert does_table_exist(gm.connection, "grid_11", "table")
+
+    # A duplicate grid_id raises and leaves the first grid intact
+    def test_duplicate_id_raises_and_keeps_first(self, gm):
+        gm.add_grid(_make_manager_grid(11))
+        with pytest.raises(Exception):
+            gm.add_grid(_make_manager_grid(11))
+        assert gm.does_grid_exist(11)
+        assert len(get_table_as_df(gm.connection, "grid_11")) == len(_make_manager_grid(11).grid)
+
+    # A failing grid_info insert drops the grid table
+    def test_failed_insert_leaves_no_table(self, gm):
+        grid = _make_manager_grid(12)
+        grid.dtime = object()
+        with pytest.raises(sqlite3.Error):
+            gm.add_grid(grid)
+        assert not gm.does_grid_exist(12)
+        assert not does_table_exist(gm.connection, "grid_12", "table")
+
+    # A table with the grid name that already exists is not overwritten
+    def test_existing_table_not_overwritten(self, gm):
+        gm.connection.execute("CREATE TABLE grid_13 (x INTEGER)")
+        gm.connection.execute("INSERT INTO grid_13 VALUES (1)")
+        gm.connection.commit()
+        with pytest.raises(ValueError):
+            gm.add_grid(_make_manager_grid(13))
+        assert gm.connection.execute("SELECT x FROM grid_13").fetchall() == [(1,)]
+        assert not gm.does_grid_exist(13)

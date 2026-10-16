@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 import numpy as np
 import pandas as pd
@@ -29,12 +30,25 @@ def _param_table_name(name: str) -> str:
     return name if name.upper().startswith("P_") else f"P_{name.upper()}"
 
 
+_last_id = 0  # init grid id
+_id_lock = threading.Lock()  # used to prevent multiple simultaneous grid id accesses
+
+
+def generate_grid_id() -> int:
+    """Return a unique integer ID derived from the Unix timestamp in microseconds."""
+    # Get module-level grid id counter (to update it)
+    global _last_id
+
+    # One thread at a time, so two threads cannot read the same _last_id
+    with _id_lock:
+        # Use integer microseconds as id
+        # If the clock had not advanced, count up from the last ID
+        _last_id = max(time.time_ns() // 1000, _last_id + 1)
+        return _last_id
+
+
 class _BaseGrid:
     """Shared grid logic for Grid and SpaceGrid."""
-
-    def generate_grid_id(self) -> int:
-        """Return a grid ID derived from the current Unix timestamp (seconds)."""
-        return round(time.time())
 
     def _open_bathymetry(self, bathymetry_grid_path: str, lat_variable: str,
                          lon_variable: str, depth_variable: str):
@@ -321,23 +335,34 @@ class GridManager:
         sel_val = (json.dumps(grid.selection.tolist())
                    if grid.selection is not None else "None")
 
-        # Insert into grid_info table
-        self.connection.execute(
-            f"INSERT INTO {self.grid_info_table} "
-            f"(grid_id, lat_min, lat_max, dlat, lon_min, lon_max, dlon, "
-            f"z_min, z_max, dz, z_array, time_min, time_max, mode, dtime, selection) "
-            f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (grid.grid_id, grid.lat_min, grid.lat_max, grid.dlat,
-             grid.lon_min, grid.lon_max, grid.dlon,
-             z_min_val, z_max_val, dz_val, z_array_val,
-             str(grid.time_min), str(grid.time_max), str(grid.mode),
-             grid.dtime, sel_val),
-        )
-        self.connection.commit()
+        # Write grid table first, then the grid_info row, so that a failure never leaves a grid_info row without its table
+        validate_identifier(grid.grid_name)
+        table_written = False
+        try:
+            # Write grid to SQL
+            grid.grid.to_sql(grid.grid_name, self.connection, if_exists="fail", index=True, index_label="idx")
+            table_written = True
 
-        # Create grid table
-        grid.grid.to_sql(grid.grid_name, self.connection, if_exists="replace",
-                         index=True, index_label="idx")
+            # Insert into grid_info table
+            self.connection.execute(
+                f"INSERT INTO {self.grid_info_table} "
+                f"(grid_id, lat_min, lat_max, dlat, lon_min, lon_max, dlon, "
+                f"z_min, z_max, dz, z_array, time_min, time_max, mode, dtime, selection) "
+                f"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (grid.grid_id, grid.lat_min, grid.lat_max, grid.dlat,
+                 grid.lon_min, grid.lon_max, grid.dlon,
+                 z_min_val, z_max_val, dz_val, z_array_val,
+                 str(grid.time_min), str(grid.time_max), str(grid.mode),
+                 grid.dtime, sel_val),
+            )
+            self.connection.commit()
+        except Exception:
+            # Undo only what this call created
+            self.connection.rollback()
+            if table_written:
+                self.connection.execute(f"DROP TABLE IF EXISTS {grid.grid_name};")
+                self.connection.commit()
+            raise
 
     def remove_grid(self, grid_id: int) -> None:
         """Remove a grid and all its mapped parameter tables from the database."""
@@ -512,7 +537,7 @@ class Grid(_BaseGrid):
             grid_id: Existing ID to use instead of generating a new one.
         """
         # Grid specs
-        self.grid_id = grid_id if grid_id else self.generate_grid_id()
+        self.grid_id = grid_id if grid_id else generate_grid_id()
         self.grid_name = f"grid_{self.grid_id}"
 
         # Init grid params
@@ -840,7 +865,7 @@ class SpaceGrid(_BaseGrid):
             grid_id: Existing ID to use instead of generating a new one.
         """
         # Grid specs
-        self.grid_id = grid_id if grid_id else self.generate_grid_id()
+        self.grid_id = grid_id if grid_id else generate_grid_id()
         self.grid_name = f"grid_{self.grid_id}"
 
         # Init grid params
@@ -1100,7 +1125,7 @@ def create_wide_table_online(connection: sqlite3.Connection, grid_id: int,
     # Define SQL query parts
     vals = ", ".join([f"{p}_{grid_id}.{p}" for p in param_tables])
     joins = " ".join([f"LEFT JOIN {p}_{grid_id} USING(idx)" for p in param_tables])
-    wide_table_name = f"wide_{grid_id}_{round(time.time())}"
+    wide_table_name = f"wide_{grid_id}_{generate_grid_id()}"
 
     # Create table in db
     connection.execute(
