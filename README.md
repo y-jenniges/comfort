@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Documentation Status](https://app.readthedocs.org/projects/comfort-db/badge/?version=latest)](https://comfort-db.readthedocs.io/en/latest/)
+[![Documentation Status](https://img.shields.io/readthedocs/comfort-db)](https://comfort-db.readthedocs.io/en/latest/)
 
 Python library for working with the [COMFORT](https://www.doi.org/10.11582/2022.00039)[1] oceanographic SQLite dataset 
 with [code documentation](https://comfort-db.readthedocs.io/en/latest/). 
